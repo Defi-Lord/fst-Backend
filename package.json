@@ -1,0 +1,41 @@
+{
+  "name": "fst-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node --env-file=.env dist/server.js",
+    "build": "tsc && prisma generate",
+    "migrate:dev": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "prisma:gen": "prisma generate",
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.18.0",
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^5.0.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.1",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "prisma": "^5.18.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "description": "Features:\r - Solana wallet login (nonce + signature -> JWT)\r - Role-based access (Admin/User)\r - Realm-separated contests (free, weekly, monthly, seasonal)\r - Prize pool + Top-8 payout rules per contest\r - Leaderboards and participants per contest\r - Admin dashboard summary endpoints\r - Audit log model",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
