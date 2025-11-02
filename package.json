@@ -13,29 +13,48 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@noble/ed25519": "^2.3.0",
     "@prisma/client": "^5.18.0",
+    "@solana/wallet-adapter-react-ui": "^0.9.39",
     "@solana/web3.js": "^1.98.4",
     "bs58": "^5.0.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
+    "express-rate-limit": "^8.2.0",
+    "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.1",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
+    "@types/body-parser": "^1.19.6",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
+    "@types/express-rate-limit": "^5.1.3",
+    "@types/helmet": "^0.0.48",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node-fetch": "^2.6.13",
     "prisma": "^5.18.0",
     "ts-node": "^10.9.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   },
-  "description": "Features:\r - Solana wallet login (nonce + signature -> JWT)\r - Role-based access (Admin/User)\r - Realm-separated contests (free, weekly, monthly, seasonal)\r - Prize pool + Top-8 payout rules per contest\r - Leaderboards and participants per contest\r - Admin dashboard summary endpoints\r - Audit log model",
+  "description": "Backend API for Fantasy Sports Tournament (FST). Features: Solana wallet login with nonce + signature -> JWT authentication, role-based access, contest realms (free, weekly, monthly, seasonal), prize pools, leaderboards, admin dashboard, and audit logging.",
   "main": "index.js",
   "directories": {
     "lib": "lib"
   },
-  "keywords": [],
+  "keywords": [
+    "solana",
+    "wallet",
+    "jwt",
+    "express",
+    "prisma",
+    "backend"
+  ],
   "author": "",
   "license": "ISC"
 }
