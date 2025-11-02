@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "node --env-file=.env dist/server.js",
-    "build": "tsc && npx prisma generate",
+    "start": "node dist/server.js"
+    "build": "tsc && node --no-warnings ./node_modules/prisma/build/index.js generate",
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "prisma:gen": "prisma generate",
@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@noble/ed25519": "^2.3.0",
-    "@prisma/client": "^5.18.0",
+    "@prisma/client": "^5.22.0",
     "@solana/wallet-adapter-react-ui": "^0.9.39",
     "@solana/web3.js": "^1.98.4",
     "bs58": "^5.0.0",
@@ -36,7 +36,7 @@
     "@types/helmet": "^0.0.48",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node-fetch": "^2.6.13",
-    "prisma": "^5.18.0",
+    "prisma": "^5.22.0",
     "ts-node": "^10.9.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
