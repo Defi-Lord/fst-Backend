@@ -2,11 +2,10 @@
   "name": "fst-backend",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc && node --no-warnings ./node_modules/prisma/build/index.js generate",
     "start": "node dist/server.js",
+    "build": "tsc && node --no-warnings ./node_modules/prisma/build/index.js generate",
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "prisma:gen": "prisma generate",
