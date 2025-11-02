@@ -21,11 +21,8 @@ router.post("/telegram", async (req, res) => {
     if (!user) {
       console.log("🆕 Creating new user...");
       user = await prisma.user.create({
-        data: {
-          id: telegramId,
-          displayName: username,
-        },
-      });
+        data: { id, displayName, telegramId: id },
+      });      
       console.log("✅ User created:", user);
     } else {
       console.log("👤 Existing user found:", user);
