@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "node dist/server.js"
+    "start": "node --env-file=.env dist/server.js",
     "build": "tsc && node --no-warnings ./node_modules/prisma/build/index.js generate",
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
