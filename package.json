@@ -3,15 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "start": "node build/server.js"
-    "build": "tsc && node --no-warnings ./node_modules/prisma/build/index.js generate",
-    "migrate:dev": "prisma migrate dev",
-    "migrate:deploy": "prisma migrate deploy",
-    "prisma:gen": "prisma generate",
-    "seed": "tsx prisma/seed.ts"
-  },
+  {
+    "scripts": {
+      "dev": "ts-node src/server.ts",
+      "build": "tsc && node --no-warnings ./node_modules/prisma/build/index.js generate",
+      "start": "node dist/server.js"
+    }  
   "dependencies": {
     "@noble/ed25519": "^2.3.0",
     "@prisma/client": "^5.22.0",
