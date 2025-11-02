@@ -7,6 +7,9 @@ import { randomUUID } from "crypto";
 import dotenv from "dotenv";
 import nacl from "tweetnacl";
 import bs58 from "bs58";
+import helmet from "helmet";
+import morgan from "morgan";
+import NodeCache from "node-cache";
 
 dotenv.config();
 
@@ -16,11 +19,13 @@ const PORT = process.env.PORT || 3300;
 // ---------- MIDDLEWARE ----------
 app.use(bodyParser.json());
 app.use(cookieParser());
+app.use(helmet());
+app.use(morgan("dev"));
 
 // ✅ Comprehensive CORS setup
 const allowedOrigins = [
   "http://localhost:5174",
-  "https://fst-mini-app-three.vercel.app", // your deployed frontend
+  "https://fst-mini-app-three.vercel.app", // frontend on Vercel
 ];
 
 app.use(
@@ -41,6 +46,9 @@ app.use(
 
 app.options("*", cors());
 
+// ---------- CACHING ----------
+const cache = new NodeCache({ stdTTL: 30 }); // Cache for 30 seconds
+
 // ---------- MOCK DATABASE ----------
 interface User {
   id: string;
@@ -51,8 +59,6 @@ interface User {
 const users = new Map<string, User>();
 
 // ---------- AUTH ROUTES ----------
-
-// Nonce endpoint (real-world you'd cache or store this)
 app.get("/auth/nonce", (req, res) => {
   const { address } = req.query;
   if (!address) return res.status(400).json({ error: "Missing address" });
@@ -61,7 +67,7 @@ app.get("/auth/nonce", (req, res) => {
   res.json({ nonce });
 });
 
-// ✅ Verify wallet (with real cryptographic signature verification)
+// ✅ Verify wallet (with cryptographic verification)
 app.post("/auth/verify", async (req, res) => {
   try {
     const { address, signature, message } = req.body;
@@ -71,7 +77,7 @@ app.post("/auth/verify", async (req, res) => {
     }
 
     const publicKeyBytes = bs58.decode(address);
-    const signatureBytes = Uint8Array.from(signature);
+    const signatureBytes = new Uint8Array(signature.data || signature);
     const messageBytes = new TextEncoder().encode(message);
 
     const isValid = nacl.sign.detached.verify(
@@ -85,25 +91,26 @@ app.post("/auth/verify", async (req, res) => {
       return res.status(401).json({ error: "Invalid signature" });
     }
 
-    // Generate a session token for this verified wallet
+    // Generate a session token
     const token = randomUUID();
     const user: User = {
       id: address,
       wallet: address,
       token,
-      role: address.startsWith("Admin") ? "ADMIN" : "USER",
+      role:
+        address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER",
     };
     users.set(address, user);
 
     console.log("✅ Wallet verified and authenticated:", address);
-    res.json({ token });
+    res.json({ token, role: user.role });
   } catch (err) {
     console.error("❌ Verify wallet error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ---------- USER + AUTH UTILITIES ----------
+// ---------- USER + AUTH ----------
 app.get("/me", (req, res) => {
   try {
     const auth = req.headers.authorization;
@@ -112,11 +119,9 @@ app.get("/me", (req, res) => {
     }
     const token = auth.split(" ")[1];
     const user = Array.from(users.values()).find((u) => u.token === token);
-
     if (!user) {
       return res.status(401).json({ error: "Invalid token" });
     }
-
     res.json({ user: { id: user.wallet, role: user.role } });
   } catch {
     res.status(500).json({ error: "Server error" });
@@ -141,11 +146,15 @@ app.post("/auth/introspect", (req, res) => {
   }
 });
 
-// ---------- FPL DATA ----------
+// ---------- FPL DATA (with caching) ----------
 app.get("/fpl/api/bootstrap-static/", async (req, res) => {
   try {
+    const cached = cache.get("bootstrap");
+    if (cached) return res.json(cached);
+
     const response = await fetch("https://fantasy.premierleague.com/api/bootstrap-static/");
     const data = await response.json();
+    cache.set("bootstrap", data);
     res.json(data);
   } catch (err) {
     console.error("❌ FPL bootstrap error:", err);
@@ -155,8 +164,12 @@ app.get("/fpl/api/bootstrap-static/", async (req, res) => {
 
 app.get("/fpl/api/fixtures/", async (req, res) => {
   try {
+    const cached = cache.get("fixtures");
+    if (cached) return res.json(cached);
+
     const response = await fetch("https://fantasy.premierleague.com/api/fixtures/");
     const data = await response.json();
+    cache.set("fixtures", data);
     res.json(data);
   } catch (err) {
     console.error("❌ FPL fixtures error:", err);
@@ -174,9 +187,14 @@ app.get("/admin/contests", (req, res) => {
   });
 });
 
+// ---------- HEALTH CHECK ----------
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
 // ---------- ROOT ----------
 app.get("/", (req, res) => {
-  res.send("✅ FST backend running successfully with real wallet verification!");
+  res.send("✅ FST backend running successfully with wallet verification & caching!");
 });
 
 // ---------- START SERVER ----------
