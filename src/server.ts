@@ -5,6 +5,8 @@ import bodyParser from "body-parser";
 import fetch from "node-fetch";
 import { randomUUID } from "crypto";
 import dotenv from "dotenv";
+import nacl from "tweetnacl";
+import bs58 from "bs58";
 
 dotenv.config();
 
@@ -15,10 +17,10 @@ const PORT = process.env.PORT || 3300;
 app.use(bodyParser.json());
 app.use(cookieParser());
 
-// ✅ Comprehensive CORS setup (for both local + production)
+// ✅ Comprehensive CORS setup
 const allowedOrigins = [
   "http://localhost:5174",
-  "https://fst-mini-app-three.vercel.app", // ✅ your deployed frontend
+  "https://fst-mini-app-three.vercel.app", // your deployed frontend
 ];
 
 app.use(
@@ -37,7 +39,6 @@ app.use(
   })
 );
 
-// Automatically handle OPTIONS preflights
 app.options("*", cors());
 
 // ---------- MOCK DATABASE ----------
@@ -51,7 +52,7 @@ const users = new Map<string, User>();
 
 // ---------- AUTH ROUTES ----------
 
-// Nonce endpoint (mocked, ensures unique challenge per wallet)
+// Nonce endpoint (real-world you'd cache or store this)
 app.get("/auth/nonce", (req, res) => {
   const { address } = req.query;
   if (!address) return res.status(400).json({ error: "Missing address" });
@@ -60,19 +61,31 @@ app.get("/auth/nonce", (req, res) => {
   res.json({ nonce });
 });
 
-// Verify wallet (mock verification)
+// ✅ Verify wallet (with real cryptographic signature verification)
 app.post("/auth/verify", async (req, res) => {
   try {
     const { address, signature, message } = req.body;
 
-    if (!address) {
-      return res.status(400).json({ error: "Missing wallet address" });
+    if (!address || !signature || !message) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // NOTE: In production, verify the signature using tweetnacl
-    // const isValid = nacl.sign.detached.verify(message, signature, publicKey);
-    // if (!isValid) return res.status(400).json({ error: "Invalid signature" });
+    const publicKeyBytes = bs58.decode(address);
+    const signatureBytes = Uint8Array.from(signature);
+    const messageBytes = new TextEncoder().encode(message);
 
+    const isValid = nacl.sign.detached.verify(
+      messageBytes,
+      signatureBytes,
+      publicKeyBytes
+    );
+
+    if (!isValid) {
+      console.warn("❌ Invalid signature for wallet:", address);
+      return res.status(401).json({ error: "Invalid signature" });
+    }
+
+    // Generate a session token for this verified wallet
     const token = randomUUID();
     const user: User = {
       id: address,
@@ -82,7 +95,7 @@ app.post("/auth/verify", async (req, res) => {
     };
     users.set(address, user);
 
-    console.log("✅ Wallet verified:", address);
+    console.log("✅ Wallet verified and authenticated:", address);
     res.json({ token });
   } catch (err) {
     console.error("❌ Verify wallet error:", err);
@@ -90,7 +103,7 @@ app.post("/auth/verify", async (req, res) => {
   }
 });
 
-// Return logged-in user
+// ---------- USER + AUTH UTILITIES ----------
 app.get("/me", (req, res) => {
   try {
     const auth = req.headers.authorization;
@@ -110,7 +123,6 @@ app.get("/me", (req, res) => {
   }
 });
 
-// Check if token is valid
 app.post("/auth/introspect", (req, res) => {
   try {
     const { token } = req.body;
@@ -129,9 +141,7 @@ app.post("/auth/introspect", (req, res) => {
   }
 });
 
-// ---------- FPL DATA (LIVE) ----------
-
-// Teams, players, events
+// ---------- FPL DATA ----------
 app.get("/fpl/api/bootstrap-static/", async (req, res) => {
   try {
     const response = await fetch("https://fantasy.premierleague.com/api/bootstrap-static/");
@@ -143,7 +153,6 @@ app.get("/fpl/api/bootstrap-static/", async (req, res) => {
   }
 });
 
-// Fixtures
 app.get("/fpl/api/fixtures/", async (req, res) => {
   try {
     const response = await fetch("https://fantasy.premierleague.com/api/fixtures/");
@@ -167,7 +176,7 @@ app.get("/admin/contests", (req, res) => {
 
 // ---------- ROOT ----------
 app.get("/", (req, res) => {
-  res.send("✅ FST backend running successfully!");
+  res.send("✅ FST backend running successfully with real wallet verification!");
 });
 
 // ---------- START SERVER ----------
