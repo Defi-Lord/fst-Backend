@@ -42,7 +42,7 @@
     "typescript": "^5.9.3"
   },
   "description": "Backend API for Fantasy Sports Tournament (FST). Features: Solana wallet login with nonce + signature -> JWT authentication, role-based access, contest realms (free, weekly, monthly, seasonal), prize pools, leaderboards, admin dashboard, and audit logging.",
-  "main": "dist/server.js",
+  "main": "index.js",
   "directories": {
     "lib": "lib"
   },
