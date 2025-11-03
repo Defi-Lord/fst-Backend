@@ -16,16 +16,19 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3300;
 
-// ---------- MIDDLEWARE ----------
+// ---------- SECURITY + UTILS ----------
 app.use(bodyParser.json());
 app.use(cookieParser());
 app.use(helmet());
 app.use(morgan("dev"));
 
-// ✅ Comprehensive CORS setup
+// ---------- CORS SETUP ----------
 const allowedOrigins = [
+  "http://localhost:5173",
   "http://localhost:5174",
-  "https://fst-mini-app-three.vercel.app", // frontend on Vercel
+  "https://fst-mini-app.vercel.app",
+  "https://fst-mini-app-three.vercel.app",
+  "https://fst-mini-app-git-feat-realms-free-and-21953f-defilords-projects.vercel.app",
 ];
 
 app.use(
@@ -44,10 +47,29 @@ app.use(
   })
 );
 
-app.options("*", cors());
+// Fallback for OPTIONS preflight and edge cases
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,POST,PUT,DELETE,OPTIONS"
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization"
+  );
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
-// ---------- CACHING ----------
-const cache = new NodeCache({ stdTTL: 30 }); // Cache for 30 seconds
+// ---------- CACHE ----------
+const cache = new NodeCache({ stdTTL: 30 }); // 30s caching for FPL data
 
 // ---------- MOCK DATABASE ----------
 interface User {
@@ -67,7 +89,7 @@ app.get("/auth/nonce", (req, res) => {
   res.json({ nonce });
 });
 
-// ✅ Verify wallet (with cryptographic verification)
+// ✅ Verify wallet (with real Solana signature verification)
 app.post("/auth/verify", async (req, res) => {
   try {
     const { address, signature, message } = req.body;
@@ -91,18 +113,16 @@ app.post("/auth/verify", async (req, res) => {
       return res.status(401).json({ error: "Invalid signature" });
     }
 
-    // Generate a session token
     const token = randomUUID();
     const user: User = {
       id: address,
       wallet: address,
       token,
-      role:
-        address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER",
+      role: address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER",
     };
     users.set(address, user);
 
-    console.log("✅ Wallet verified and authenticated:", address);
+    console.log("✅ Wallet verified:", address, "| Role:", user.role);
     res.json({ token, role: user.role });
   } catch (err) {
     console.error("❌ Verify wallet error:", err);
@@ -110,18 +130,18 @@ app.post("/auth/verify", async (req, res) => {
   }
 });
 
-// ---------- USER + AUTH ----------
+// ---------- AUTH HELPERS ----------
 app.get("/me", (req, res) => {
   try {
     const auth = req.headers.authorization;
     if (!auth?.startsWith("Bearer ")) {
       return res.status(401).json({ error: "Unauthorized" });
     }
+
     const token = auth.split(" ")[1];
     const user = Array.from(users.values()).find((u) => u.token === token);
-    if (!user) {
-      return res.status(401).json({ error: "Invalid token" });
-    }
+    if (!user) return res.status(401).json({ error: "Invalid token" });
+
     res.json({ user: { id: user.wallet, role: user.role } });
   } catch {
     res.status(500).json({ error: "Server error" });
@@ -131,14 +151,9 @@ app.get("/me", (req, res) => {
 app.post("/auth/introspect", (req, res) => {
   try {
     const { token } = req.body;
-    if (!token) {
-      return res.status(200).json({ active: false, payload: { role: "USER" } });
-    }
-
     const user = Array.from(users.values()).find((u) => u.token === token);
-    if (!user) {
+    if (!user)
       return res.status(200).json({ active: false, payload: { role: "USER" } });
-    }
 
     res.json({ active: true, payload: { role: user.role } });
   } catch {
@@ -146,13 +161,15 @@ app.post("/auth/introspect", (req, res) => {
   }
 });
 
-// ---------- FPL DATA (with caching) ----------
+// ---------- FPL API (Cached) ----------
 app.get("/fpl/api/bootstrap-static/", async (req, res) => {
   try {
     const cached = cache.get("bootstrap");
     if (cached) return res.json(cached);
 
-    const response = await fetch("https://fantasy.premierleague.com/api/bootstrap-static/");
+    const response = await fetch(
+      "https://fantasy.premierleague.com/api/bootstrap-static/"
+    );
     const data = await response.json();
     cache.set("bootstrap", data);
     res.json(data);
@@ -167,7 +184,9 @@ app.get("/fpl/api/fixtures/", async (req, res) => {
     const cached = cache.get("fixtures");
     if (cached) return res.json(cached);
 
-    const response = await fetch("https://fantasy.premierleague.com/api/fixtures/");
+    const response = await fetch(
+      "https://fantasy.premierleague.com/api/fixtures/"
+    );
     const data = await response.json();
     cache.set("fixtures", data);
     res.json(data);
@@ -187,7 +206,7 @@ app.get("/admin/contests", (req, res) => {
   });
 });
 
-// ---------- HEALTH CHECK ----------
+// ---------- HEALTH ----------
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok" });
 });
