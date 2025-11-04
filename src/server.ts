@@ -34,17 +34,11 @@ const allowedOrigins = [
 
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.warn("❌ Blocked CORS origin:", origin);
-        callback(new Error("Not allowed by CORS"));
-      }
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) callback(null, true);
+      else callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
@@ -63,7 +57,7 @@ app.use((req, res, next) => {
 // ---------- CACHE ----------
 const cache = new NodeCache({ stdTTL: 60 });
 
-// ---------- AUTH ----------
+// ---------- MOCK DB ----------
 interface User {
   id: string;
   wallet: string;
@@ -72,6 +66,7 @@ interface User {
 }
 const users = new Map<string, User>();
 
+// ---------- AUTH ----------
 app.get("/auth/nonce", (req, res) => {
   const { address } = req.query;
   if (!address) return res.status(400).json({ error: "Missing address" });
@@ -124,25 +119,45 @@ app.get("/me", (req, res) => {
   }
 });
 
-// ---------- SAFE FETCH UTILITY ----------
+// 🔁 Add introspect endpoint (missing before)
+app.post("/auth/introspect", (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token)
+      return res.status(200).json({ active: false, payload: { role: "USER" } });
+    const user = Array.from(users.values()).find((u) => u.token === token);
+    if (!user)
+      return res.status(200).json({ active: false, payload: { role: "USER" } });
+    res.json({ active: true, payload: { role: user.role } });
+  } catch {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ---------- SAFE FETCH WITH PROXY FALLBACK ----------
 const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 
 async function safeFetch(url: string, cacheKey: string, res: any) {
   try {
     const cached = cache.get(cacheKey);
-    if (cached) {
-      console.log(`🟢 Cache hit for ${cacheKey}`);
-      return res.json(cached);
-    }
+    if (cached) return res.json(cached);
 
-    const response = await fetch(url, {
-      method: "GET",
+    let response = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; FST-App/1.0; +https://fst-mini-app.vercel.app)",
-        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (compatible; FST-App/1.0)",
+        Accept: "application/json",
       },
       agent: httpsAgent,
     });
+
+    // fallback if Render blocks direct access
+    if (!response.ok) {
+      console.warn(`⚠️ FPL direct fetch failed, retrying via proxy: ${url}`);
+      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(
+        url
+      )}`;
+      response = await fetch(proxyUrl);
+    }
 
     if (!response.ok) {
       console.error(`❌ ${cacheKey} fetch failed:`, response.statusText);
@@ -165,6 +180,16 @@ app.get("/fpl/api/bootstrap-static", (req, res) =>
 app.get("/fpl/api/fixtures", (req, res) =>
   safeFetch("https://fantasy.premierleague.com/api/fixtures/", "fixtures", res)
 );
+
+// ---------- ADMIN ----------
+app.get("/admin/contests", (req, res) => {
+  res.json({
+    contests: [
+      { id: 1, name: "Weekly Realm", status: "active" },
+      { id: 2, name: "Free Realm", status: "completed" },
+    ],
+  });
+});
 
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => {
