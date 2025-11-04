@@ -21,9 +21,9 @@ const PORT = process.env.PORT || 3300;
 app.use(bodyParser.json());
 app.use(cookieParser());
 app.use(helmet());
-app.use(morgan("dev"));
+app.use(morgan("tiny"));
 
-// ---------- CORS SETUP ----------
+// ---------- CORS ----------
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
@@ -34,30 +34,19 @@ const allowedOrigins = [
 
 app.use(
   cors({
-    origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) callback(null, true);
-      else callback(new Error("Not allowed by CORS"));
-    },
+    origin: (origin, cb) =>
+      !origin || allowedOrigins.includes(origin)
+        ? cb(null, true)
+        : cb(new Error("Not allowed by CORS")),
     credentials: true,
   })
 );
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  }
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") return res.sendStatus(200);
-  next();
-});
-
 // ---------- CACHE ----------
-const cache = new NodeCache({ stdTTL: 60 });
+const cache = new NodeCache({ stdTTL: 300 }); // 5 minutes
+const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 
-// ---------- MOCK DB ----------
+// ---------- MOCK USERS ----------
 interface User {
   id: string;
   wallet: string;
@@ -75,29 +64,27 @@ app.get("/auth/nonce", (req, res) => {
 });
 
 app.post("/auth/verify", async (req, res) => {
+  const start = Date.now();
   try {
     const { address, signature, message } = req.body;
-    if (!address || !signature || !message) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
+    if (!address || !signature || !message)
+      return res.status(400).json({ error: "Missing fields" });
 
-    const publicKeyBytes = bs58.decode(address);
-    const signatureBytes = new Uint8Array(signature.data || signature);
-    const messageBytes = new TextEncoder().encode(message);
+    // return cached session immediately
+    const existing = users.get(address);
+    if (existing) return res.json({ token: existing.token, role: existing.role });
 
-    const isValid = nacl.sign.detached.verify(
-      messageBytes,
-      signatureBytes,
-      publicKeyBytes
-    );
-
+    const pubKey = bs58.decode(address);
+    const sig = new Uint8Array(signature.data || signature);
+    const msg = new TextEncoder().encode(message);
+    const isValid = nacl.sign.detached.verify(msg, sig, pubKey);
     if (!isValid) return res.status(401).json({ error: "Invalid signature" });
 
     const token = randomUUID();
-    const role =
-      address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER";
+    const role = address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER";
     users.set(address, { id: address, wallet: address, token, role });
 
+    console.log(`✅ Wallet verified in ${Date.now() - start} ms`);
     res.json({ token, role });
   } catch (err) {
     console.error("❌ Verify error:", err);
@@ -105,83 +92,65 @@ app.post("/auth/verify", async (req, res) => {
   }
 });
 
-app.get("/me", (req, res) => {
-  try {
-    const auth = req.headers.authorization;
-    if (!auth?.startsWith("Bearer "))
-      return res.status(401).json({ error: "Unauthorized" });
-    const token = auth.split(" ")[1];
-    const user = Array.from(users.values()).find((u) => u.token === token);
-    if (!user) return res.status(401).json({ error: "Invalid token" });
-    res.json({ user });
-  } catch {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// 🔁 Add introspect endpoint (missing before)
 app.post("/auth/introspect", (req, res) => {
-  try {
-    const { token } = req.body;
-    if (!token)
-      return res.status(200).json({ active: false, payload: { role: "USER" } });
-    const user = Array.from(users.values()).find((u) => u.token === token);
-    if (!user)
-      return res.status(200).json({ active: false, payload: { role: "USER" } });
-    res.json({ active: true, payload: { role: user.role } });
-  } catch {
-    res.status(500).json({ error: "Server error" });
-  }
+  const { token } = req.body;
+  const user = Array.from(users.values()).find((u) => u.token === token);
+  if (!user)
+    return res.status(200).json({ active: false, payload: { role: "USER" } });
+  res.json({ active: true, payload: { role: user.role } });
 });
 
-// ---------- SAFE FETCH WITH PROXY FALLBACK ----------
-const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
+app.get("/me", (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer "))
+    return res.status(401).json({ error: "Unauthorized" });
+  const token = auth.split(" ")[1];
+  const user = Array.from(users.values()).find((u) => u.token === token);
+  if (!user) return res.status(401).json({ error: "Invalid token" });
+  res.json({ user });
+});
 
+// ---------- FAST FPL FETCH ----------
 async function safeFetch(url: string, cacheKey: string, res: any) {
   try {
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    let response = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; FST-App/1.0)",
-        Accept: "application/json",
-      },
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    let r = await fetch(url, {
+      headers: { "User-Agent": "FST-App/1.0", Accept: "application/json" },
       agent: httpsAgent,
+      signal: controller.signal,
     });
 
-    // fallback if Render blocks direct access
-    if (!response.ok) {
-      console.warn(`⚠️ FPL direct fetch failed, retrying via proxy: ${url}`);
+    clearTimeout(timeout);
+
+    if (!r.ok) {
       const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(
         url
       )}`;
-      response = await fetch(proxyUrl);
+      r = await fetch(proxyUrl);
     }
 
-    if (!response.ok) {
-      console.error(`❌ ${cacheKey} fetch failed:`, response.statusText);
-      return res.status(502).json({ error: `Failed to fetch ${cacheKey}` });
-    }
-
-    const data = await response.json();
+    const data = await r.json();
     cache.set(cacheKey, data);
     res.json(data);
-  } catch (err: any) {
-    console.error(`❌ ${cacheKey} error:`, err.message || err);
-    res.status(500).json({ error: `Failed to fetch ${cacheKey}` });
+  } catch (err) {
+    console.error(`❌ ${cacheKey} fetch failed`, err);
+    res.status(502).json({ error: "Fetch failed" });
   }
 }
 
+// ---------- ROUTES ----------
 app.get("/fpl/api/bootstrap-static", (req, res) =>
   safeFetch("https://fantasy.premierleague.com/api/bootstrap-static/", "bootstrap", res)
 );
-
 app.get("/fpl/api/fixtures", (req, res) =>
   safeFetch("https://fantasy.premierleague.com/api/fixtures/", "fixtures", res)
 );
 
-// ---------- ADMIN ----------
 app.get("/admin/contests", (req, res) => {
   res.json({
     contests: [
@@ -191,16 +160,37 @@ app.get("/admin/contests", (req, res) => {
   });
 });
 
-// ---------- HEALTH ----------
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok" });
+app.get("/health", (_, res) => res.status(200).json({ status: "ok" }));
+
+// ping endpoint (for uptime robots)
+app.get("/warmup", (_, res) => {
+  Promise.allSettled([
+    fetch("https://fantasy.premierleague.com/api/bootstrap-static/"),
+    fetch("https://fantasy.premierleague.com/api/fixtures/"),
+  ]).then(() => res.json({ warmed: true }));
 });
 
-// ---------- ROOT ----------
-app.get("/", (req, res) => {
-  res.send("✅ FST backend running successfully!");
-});
+app.get("/", (_, res) =>
+  res.send("✅ FST backend running with fast caching & wallet auth")
+);
+
+// ---------- PREFETCH DATA ----------
+async function prefetchAll() {
+  console.log("🚀 Prefetching FPL data...");
+  try {
+    const [boot, fix] = await Promise.all([
+      fetch("https://fantasy.premierleague.com/api/bootstrap-static/").then((r) => r.json()),
+      fetch("https://fantasy.premierleague.com/api/fixtures/").then((r) => r.json()),
+    ]);
+    cache.set("bootstrap", boot);
+    cache.set("fixtures", fix);
+    console.log("✅ Prefetched and cached successfully");
+  } catch (e) {
+    console.warn("⚠️ Prefetch failed:", e);
+  }
+}
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  prefetchAll();
 });
