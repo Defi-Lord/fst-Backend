@@ -155,54 +155,72 @@ app.post("/auth/introspect", (req, res) => {
   }
 });
 
-// ---------- FPL DATA (robust with retry + safe HTTPS agent) ----------
+// ---------- FPL DATA (robust fetch + caching + diagnostics) ----------
 import https from "https";
 
 const agent = new https.Agent({
-  keepAlive: true,
-  rejectUnauthorized: false, // bypass Render SSL validation issue
+  rejectUnauthorized: false, // Helps bypass Render's SSL proxy issue
 });
 
-async function safeFetchJson(url: string, cacheKey: string, res: any) {
+app.get("/fpl/api/bootstrap-static/", async (req, res) => {
   try {
-    const cached = cache.get(cacheKey);
-    if (cached) {
-      console.log(`🟢 Serving ${cacheKey} from cache`);
-      return res.json(cached);
-    }
+    const cached = cache.get("bootstrap");
+    if (cached) return res.json(cached);
 
-    console.log(`🌍 Fetching ${cacheKey} from FPL API...`);
-    const response = await fetch(url, {
+    console.log("🌍 Fetching FPL bootstrap data...");
+    const response = await fetch("https://fantasy.premierleague.com/api/bootstrap-static/", {
       method: "GET",
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; FST-App/1.0; +https://fst-mini-app.vercel.app)",
+        "User-Agent": "FST-App/1.0",
         "Accept": "application/json",
       },
       agent,
     });
 
     if (!response.ok) {
-      console.error(`❌ ${cacheKey} fetch failed:`, response.status, response.statusText);
-      return res.status(502).json({ error: `Failed to fetch ${cacheKey}` });
+      console.error("❌ FPL bootstrap fetch failed:", response.status, response.statusText);
+      return res.status(502).json({ error: "Failed to fetch FPL bootstrap data" });
     }
 
     const data = await response.json();
-    cache.set(cacheKey, data);
-    console.log(`✅ Successfully fetched ${cacheKey}`);
-    return res.json(data);
-  } catch (err: any) {
-    console.error(`❌ ${cacheKey} error:`, err.message || err);
-    return res.status(500).json({ error: `Failed to fetch ${cacheKey}` });
+    cache.set("bootstrap", data);
+    console.log("✅ Successfully fetched FPL bootstrap data");
+    res.json(data);
+  } catch (err) {
+    console.error("❌ FPL bootstrap error:", err.message || err);
+    res.status(500).json({ error: "Failed to fetch FPL data" });
   }
-}
+});
 
-app.get("/fpl/api/bootstrap-static/", (req, res) =>
-  safeFetchJson("https://fantasy.premierleague.com/api/bootstrap-static/", "bootstrap", res)
-);
+app.get("/fpl/api/fixtures/", async (req, res) => {
+  try {
+    const cached = cache.get("fixtures");
+    if (cached) return res.json(cached);
 
-app.get("/fpl/api/fixtures/", (req, res) =>
-  safeFetchJson("https://fantasy.premierleague.com/api/fixtures/", "fixtures", res)
-);
+    console.log("🌍 Fetching FPL fixtures...");
+    const response = await fetch("https://fantasy.premierleague.com/api/fixtures/", {
+      method: "GET",
+      headers: {
+        "User-Agent": "FST-App/1.0",
+        "Accept": "application/json",
+      },
+      agent,
+    });
+
+    if (!response.ok) {
+      console.error("❌ FPL fixtures fetch failed:", response.status, response.statusText);
+      return res.status(502).json({ error: "Failed to fetch fixtures" });
+    }
+
+    const data = await response.json();
+    cache.set("fixtures", data);
+    console.log("✅ Successfully fetched FPL fixtures");
+    res.json(data);
+  } catch (err) {
+    console.error("❌ FPL fixtures error:", err.message || err);
+    res.status(500).json({ error: "Failed to fetch fixtures" });
+  }
+});
 
 
 // ---------- ADMIN ----------
