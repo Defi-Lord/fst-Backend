@@ -1,3 +1,4 @@
+// middlewares/auth.ts
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 
@@ -16,15 +17,20 @@ declare global {
   }
 }
 
+/**
+ * issueJwt - create a JWT for a user payload
+ */
 export function issueJwt(payload: AuthUser) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
 }
 
+/**
+ * requireAuth - express middleware to require a valid JWT
+ */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const auth = req.headers.authorization;
-  if (!auth?.startsWith("Bearer ")) {
+  if (!auth?.startsWith("Bearer "))
     return res.status(401).json({ error: "Unauthorized" });
-  }
 
   const token = auth.slice(7);
   try {
@@ -32,16 +38,18 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     req.auth = data;
     next();
   } catch (err) {
-    console.error("❌ Invalid token:", err);
-    return res.status(401).json({ error: "Invalid or expired token" });
+    return res.status(401).json({ error: "Invalid token" });
   }
 }
 
+/**
+ * requireAdmin - require an authenticated admin
+ */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  // reuse requireAuth then check role
   requireAuth(req, res, () => {
-    if (req.auth?.role !== "ADMIN") {
+    if (req.auth?.role !== "ADMIN")
       return res.status(403).json({ error: "Admin only" });
-    }
     next();
   });
 }
