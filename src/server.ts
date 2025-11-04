@@ -13,7 +13,7 @@ import morgan from "morgan";
 import NodeCache from "node-cache";
 import https from "https";
 
-import { issueJwt, requireAuth, requireAdmin, AuthUser } from "./middlewares/auth";
+import { issueJwt, requireAuth, requireAdmin, AuthUser } from "./middleware/auth";
 
 dotenv.config();
 
