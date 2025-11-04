@@ -10,6 +10,7 @@ import bs58 from "bs58";
 import helmet from "helmet";
 import morgan from "morgan";
 import NodeCache from "node-cache";
+import https from "https";
 
 dotenv.config();
 
@@ -56,14 +57,12 @@ app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
+  if (req.method === "OPTIONS") return res.sendStatus(200);
   next();
 });
 
 // ---------- CACHE ----------
-const cache = new NodeCache({ stdTTL: 30 }); // cache responses for 30 seconds
+const cache = new NodeCache({ stdTTL: 30 });
 
 // ---------- MOCK DATABASE ----------
 interface User {
@@ -78,12 +77,10 @@ const users = new Map<string, User>();
 app.get("/auth/nonce", (req, res) => {
   const { address } = req.query;
   if (!address) return res.status(400).json({ error: "Missing address" });
-
   const nonce = randomUUID();
   res.json({ nonce });
 });
 
-// ✅ Verify wallet using Solana signature verification
 app.post("/auth/verify", async (req, res) => {
   try {
     const { address, signature, message } = req.body;
@@ -128,9 +125,8 @@ app.post("/auth/verify", async (req, res) => {
 app.get("/me", (req, res) => {
   try {
     const auth = req.headers.authorization;
-    if (!auth?.startsWith("Bearer ")) {
+    if (!auth?.startsWith("Bearer "))
       return res.status(401).json({ error: "Unauthorized" });
-    }
 
     const token = auth.split(" ")[1];
     const user = Array.from(users.values()).find((u) => u.token === token);
@@ -155,12 +151,10 @@ app.post("/auth/introspect", (req, res) => {
   }
 });
 
-// ---------- FPL DATA (robust with retry + safe HTTPS agent) ----------
-import https from "https";
-
+// ---------- FPL DATA (robust + safe fetch) ----------
 const agent = new https.Agent({
   keepAlive: true,
-  rejectUnauthorized: false, // bypass Render SSL validation issue
+  rejectUnauthorized: false, // Fix Render SSL issues
 });
 
 async function safeFetchJson(url: string, cacheKey: string, res: any) {
@@ -175,8 +169,9 @@ async function safeFetchJson(url: string, cacheKey: string, res: any) {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; FST-App/1.0; +https://fst-mini-app.vercel.app)",
-        "Accept": "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (compatible; FST-App/1.0; +https://fst-mini-app.vercel.app)",
+        Accept: "application/json",
       },
       agent,
     });
@@ -203,7 +198,6 @@ app.get("/fpl/api/bootstrap-static/", (req, res) =>
 app.get("/fpl/api/fixtures/", (req, res) =>
   safeFetchJson("https://fantasy.premierleague.com/api/fixtures/", "fixtures", res)
 );
-
 
 // ---------- ADMIN ----------
 app.get("/admin/contests", (req, res) => {
