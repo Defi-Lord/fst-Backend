@@ -16,7 +16,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3300;
 
-// ---------- SECURITY + UTILS ----------
+// ---------- SECURITY + UTILITIES ----------
 app.use(bodyParser.json());
 app.use(cookieParser());
 app.use(helmet());
@@ -47,21 +47,15 @@ app.use(
   })
 );
 
-// Fallback for OPTIONS preflight and edge cases
+// Preflight / OPTIONS fallback
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && allowedOrigins.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
   res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader(
-    "Access-Control-Allow-Methods",
-    "GET,POST,PUT,DELETE,OPTIONS"
-  );
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
-  );
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") {
     return res.sendStatus(200);
   }
@@ -69,7 +63,7 @@ app.use((req, res, next) => {
 });
 
 // ---------- CACHE ----------
-const cache = new NodeCache({ stdTTL: 30 }); // 30s caching for FPL data
+const cache = new NodeCache({ stdTTL: 30 }); // cache responses for 30 seconds
 
 // ---------- MOCK DATABASE ----------
 interface User {
@@ -89,7 +83,7 @@ app.get("/auth/nonce", (req, res) => {
   res.json({ nonce });
 });
 
-// ✅ Verify wallet (with real Solana signature verification)
+// ✅ Verify wallet using Solana signature verification
 app.post("/auth/verify", async (req, res) => {
   try {
     const { address, signature, message } = req.body;
@@ -161,15 +155,31 @@ app.post("/auth/introspect", (req, res) => {
   }
 });
 
-// ---------- FPL API (Cached) ----------
+// ---------- FPL API (Improved & Cached) ----------
 app.get("/fpl/api/bootstrap-static/", async (req, res) => {
   try {
     const cached = cache.get("bootstrap");
     if (cached) return res.json(cached);
 
     const response = await fetch(
-      "https://fantasy.premierleague.com/api/bootstrap-static/"
+      "https://fantasy.premierleague.com/api/bootstrap-static/",
+      {
+        method: "GET",
+        headers: { "User-Agent": "FST-App/1.0" },
+      }
     );
+
+    if (!response.ok) {
+      console.error(
+        "❌ FPL bootstrap fetch failed:",
+        response.status,
+        response.statusText
+      );
+      return res
+        .status(502)
+        .json({ error: "Failed to fetch FPL bootstrap data" });
+    }
+
     const data = await response.json();
     cache.set("bootstrap", data);
     res.json(data);
@@ -185,8 +195,22 @@ app.get("/fpl/api/fixtures/", async (req, res) => {
     if (cached) return res.json(cached);
 
     const response = await fetch(
-      "https://fantasy.premierleague.com/api/fixtures/"
+      "https://fantasy.premierleague.com/api/fixtures/",
+      {
+        method: "GET",
+        headers: { "User-Agent": "FST-App/1.0" },
+      }
     );
+
+    if (!response.ok) {
+      console.error(
+        "❌ FPL fixtures fetch failed:",
+        response.status,
+        response.statusText
+      );
+      return res.status(502).json({ error: "Failed to fetch fixtures" });
+    }
+
     const data = await response.json();
     cache.set("fixtures", data);
     res.json(data);
