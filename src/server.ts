@@ -14,7 +14,6 @@ import NodeCache from "node-cache";
 import https from "https";
 
 import { issueJwt, requireAuth, requireAdmin } from "./middleware/auth.js";
-import authRoutes from "./routes/authRoutes.js"; // ✅ wallet auth routes
 
 dotenv.config();
 
@@ -99,6 +98,7 @@ interface Contest {
 
 const users = new Map<string, UserRecord>();
 const contests = new Map<number, Contest>();
+const walletNonces = new Map<string, string>();
 
 function seedContests() {
   const now = Date.now();
@@ -132,25 +132,37 @@ function seedContests() {
 }
 seedContests();
 
-// ---------- WALLET AUTH ROUTES ----------
-app.use("/auth", authRoutes); // ✅ handles /auth/challenge + /auth/verify (new secure route)
+// ---------- WALLET AUTH ----------
+app.post("/auth/challenge", (req, res) => {
+  try {
+    const { address } = req.body;
+    if (!address) return res.status(400).json({ error: "Missing wallet address" });
 
-// ---------- LEGACY AUTH (still supported) ----------
-app.get("/auth/nonce", (req, res) => {
-  const { address } = req.query;
-  if (!address) return res.status(400).json({ error: "Missing address" });
-  const nonce = randomUUID();
-  res.json({ nonce });
+    const challenge = `Sign this message to verify your wallet: ${randomUUID()}`;
+    walletNonces.set(address, challenge);
+
+    res.json({ ok: true, challenge });
+  } catch (err) {
+    console.error("❌ Error generating challenge:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
-app.post("/auth/verify-old", async (req, res) => {
+app.post("/auth/verify", async (req, res) => {
   try {
     const { address, signature, message } = req.body;
     if (!address || !signature || !message)
       return res.status(400).json({ error: "Missing required fields" });
 
+    const expected = walletNonces.get(address);
+    if (!expected || expected !== message)
+      return res.status(400).json({ error: "No challenge found" });
+
     const publicKeyBytes = bs58.decode(address);
-    const signatureBytes = new Uint8Array(signature.data || signature);
+    const signatureBytes =
+      typeof signature === "string"
+        ? Uint8Array.from(Buffer.from(signature, "base64"))
+        : new Uint8Array(signature.data || signature);
     const messageBytes = new TextEncoder().encode(message);
 
     const isValid = nacl.sign.detached.verify(
@@ -158,8 +170,9 @@ app.post("/auth/verify-old", async (req, res) => {
       signatureBytes,
       publicKeyBytes
     );
-
     if (!isValid) return res.status(401).json({ error: "Invalid signature" });
+
+    walletNonces.delete(address);
 
     const role: Role =
       address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER";
@@ -174,7 +187,7 @@ app.post("/auth/verify-old", async (req, res) => {
     };
     users.set(address, record);
 
-    res.json({ token, role });
+    res.json({ ok: true, token, role });
   } catch (err) {
     console.error("❌ Verify wallet error:", err);
     res.status(500).json({ error: "Server error" });
@@ -261,24 +274,16 @@ async function safeFetchJson(url: string, cacheKey: string, res: any) {
 }
 
 app.get("/fpl/api/bootstrap-static/", (req, res) =>
-  safeFetchJson(
-    "https://fantasy.premierleague.com/api/bootstrap-static/",
-    "bootstrap",
-    res
-  )
+  safeFetchJson("https://fantasy.premierleague.com/api/bootstrap-static/", "bootstrap", res)
 );
 app.get("/fpl/api/fixtures/", (req, res) =>
-  safeFetchJson(
-    "https://fantasy.premierleague.com/api/fixtures/",
-    "fixtures",
-    res
-  )
+  safeFetchJson("https://fantasy.premierleague.com/api/fixtures/", "fixtures", res)
 );
 
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 app.get("/", (req, res) =>
-  res.send("✅ FST backend running successfully with wallet auth + CORS fixes!")
+  res.send("✅ FST backend running successfully with wallet challenge verification!")
 );
 
 // ---------- START ----------
