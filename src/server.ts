@@ -21,10 +21,15 @@ const app = express();
 const PORT = process.env.PORT || 3300;
 
 // ---------- SECURITY + UTILITIES ----------
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "1mb" }));
 app.use(cookieParser());
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+  })
+);
 app.use(morgan("dev"));
+app.set("trust proxy", 1);
 
 // ---------- CORS ----------
 const allowedOrigins = [
@@ -35,28 +40,32 @@ const allowedOrigins = [
   "https://fst-mini-app-git-feat-realms-free-and-21953f-defilords-projects.vercel.app",
 ];
 
+// ✅ Always respond with headers, even for OPTIONS
 app.use(
   cors({
-    origin: (origin, cb) =>
-      !origin || allowedOrigins.includes(origin)
-        ? cb(null, true)
-        : cb(new Error("Not allowed by CORS")),
+    origin: (origin, cb) => {
+      if (!origin || allowedOrigins.includes(origin)) cb(null, true);
+      else {
+        console.warn(`🚫 CORS blocked: ${origin}`);
+        cb(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
-// Preflight fix
-app.options("*", (req, res) => {
-  const origin = req.headers.origin;
-  if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  }
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.sendStatus(200);
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      res.header("Access-Control-Allow-Origin", origin);
+    }
+    res.header("Access-Control-Allow-Credentials", "true");
+    res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    if (req.method === "OPTIONS") return res.sendStatus(200);
+    next();
 });
 
 // ---------- CACHE ----------
@@ -143,12 +152,12 @@ app.post("/auth/challenge", (req, res) => {
 
     res.json({ ok: true, challenge });
   } catch (err) {
-    console.error("❌ Error generating challenge:", err);
+    console.error("❌ Challenge error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-app.post("/auth/verify", async (req, res) => {
+app.post("/auth/verify", (req, res) => {
   try {
     const { address, signature, message } = req.body;
     if (!address || !signature || !message)
@@ -165,11 +174,7 @@ app.post("/auth/verify", async (req, res) => {
         : new Uint8Array(signature.data || signature);
     const messageBytes = new TextEncoder().encode(message);
 
-    const isValid = nacl.sign.detached.verify(
-      messageBytes,
-      signatureBytes,
-      publicKeyBytes
-    );
+    const isValid = nacl.sign.detached.verify(messageBytes, signatureBytes, publicKeyBytes);
     if (!isValid) return res.status(401).json({ error: "Invalid signature" });
 
     walletNonces.delete(address);
@@ -283,7 +288,7 @@ app.get("/fpl/api/fixtures/", (req, res) =>
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 app.get("/", (req, res) =>
-  res.send("✅ FST backend running successfully with wallet challenge verification!")
+  res.send("✅ FST backend running successfully with secure CORS + wallet challenge verification!")
 );
 
 // ---------- START ----------
