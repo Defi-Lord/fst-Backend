@@ -1,3 +1,4 @@
+// server.ts
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -11,7 +12,8 @@ import helmet from "helmet";
 import morgan from "morgan";
 import NodeCache from "node-cache";
 import https from "https";
-import { requireAuth, requireAdmin, issueJwt } from "./middleware/auth";
+
+import { issueJwt, requireAuth, requireAdmin, AuthUser } from "./middleware/auth";
 
 dotenv.config();
 
@@ -24,7 +26,7 @@ app.use(cookieParser());
 app.use(helmet());
 app.use(morgan("dev"));
 
-// ---------- CORS SETUP ----------
+// ---------- CORS ----------
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
@@ -35,20 +37,17 @@ const allowedOrigins = [
 
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.warn("❌ Blocked CORS origin:", origin);
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
+    origin: (origin, cb) =>
+      !origin || allowedOrigins.includes(origin)
+        ? cb(null, true)
+        : cb(new Error("Not allowed by CORS")),
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
+// Preflight / OPTIONS fallback
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && allowedOrigins.includes(origin)) {
@@ -62,18 +61,78 @@ app.use((req, res, next) => {
 });
 
 // ---------- CACHE ----------
-const cache = new NodeCache({ stdTTL: 60 }); // cache 1 minute
+const cache = new NodeCache({ stdTTL: 300 });
+const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 
 // ---------- MOCK DATABASE ----------
-interface User {
+type Role = "USER" | "ADMIN";
+
+interface UserRecord {
   id: string;
   wallet: string;
-  token: string;
-  role: string;
+  token?: string;
+  role: Role;
+  createdAt: number;
 }
-const users = new Map<string, User>();
 
-// ---------- AUTH ROUTES ----------
+interface Participant {
+  wallet: string;
+  joinedAt: number;
+  paid: boolean;
+  entryFee: number;
+  score: number;
+  history: { gw: number; score: number }[];
+  position?: number;
+}
+
+interface Contest {
+  id: number;
+  name: string;
+  type: "FREE" | "WEEKLY" | "MONTHLY" | "SEASONAL";
+  entryFee: number;
+  participants: Map<string, Participant>;
+  registrationOpen: boolean;
+  registrationStart?: string;
+  registrationEnd?: string;
+  createdAt: number;
+}
+
+const users = new Map<string, UserRecord>();
+const contests = new Map<number, Contest>();
+
+function seedContests() {
+  const now = Date.now();
+  contests.set(1, {
+    id: 1,
+    name: "Weekly Realm",
+    type: "WEEKLY",
+    entryFee: 1,
+    participants: new Map(),
+    registrationOpen: true,
+    createdAt: now,
+  });
+  contests.set(2, {
+    id: 2,
+    name: "Free Realm",
+    type: "FREE",
+    entryFee: 0,
+    participants: new Map(),
+    registrationOpen: true,
+    createdAt: now,
+  });
+  contests.set(3, {
+    id: 3,
+    name: "Monthly Realm",
+    type: "MONTHLY",
+    entryFee: 5,
+    participants: new Map(),
+    registrationOpen: true,
+    createdAt: now,
+  });
+}
+seedContests();
+
+// ---------- AUTH ----------
 app.get("/auth/nonce", (req, res) => {
   const { address } = req.query;
   if (!address) return res.status(400).json({ error: "Missing address" });
@@ -81,7 +140,6 @@ app.get("/auth/nonce", (req, res) => {
   res.json({ nonce });
 });
 
-// ✅ Verify wallet using Solana signature verification
 app.post("/auth/verify", async (req, res) => {
   try {
     const { address, signature, message } = req.body;
@@ -98,140 +156,121 @@ app.post("/auth/verify", async (req, res) => {
       publicKeyBytes
     );
 
-    if (!isValid) {
-      console.warn("❌ Invalid signature for wallet:", address);
-      return res.status(401).json({ error: "Invalid signature" });
-    }
+    if (!isValid) return res.status(401).json({ error: "Invalid signature" });
 
-    const token = issueJwt({
-      userId: address,
-      role:
-        address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER",
-    });
+    const role: Role =
+      address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER";
+    const token = issueJwt({ userId: address, role });
 
-    const user: User = {
+    const record: UserRecord = {
       id: address,
       wallet: address,
       token,
-      role:
-        address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER",
+      role,
+      createdAt: Date.now(),
     };
-    users.set(address, user);
+    users.set(address, record);
 
-    console.log("✅ Wallet verified:", address, "| Role:", user.role);
-    res.json({ token, role: user.role });
+    res.json({ token, role });
   } catch (err) {
     console.error("❌ Verify wallet error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ---------- AUTH HELPERS ----------
-app.get("/me", requireAuth, (req, res) => {
-  try {
-    const user = users.get(req.auth!.userId);
-    if (!user) return res.status(401).json({ error: "Invalid token" });
-    res.json({ user: { id: user.wallet, role: user.role } });
-  } catch {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
 app.post("/auth/introspect", (req, res) => {
-  try {
-    const { token } = req.body;
-    const user = Array.from(users.values()).find((u) => u.token === token);
-    if (!user)
-      return res.status(200).json({ active: false, payload: { role: "USER" } });
-
-    res.json({ active: true, payload: { role: user.role } });
-  } catch {
-    res.status(500).json({ error: "Server error" });
-  }
+  const { token } = req.body;
+  const user = Array.from(users.values()).find((u) => u.token === token);
+  if (!user)
+    return res.status(200).json({ active: false, payload: { role: "USER" } });
+  res.json({ active: true, payload: { role: user.role } });
 });
 
-// ---------- FPL DATA (Fast + Reliable with Fallback Proxy) ----------
-const agent = new https.Agent({
-  keepAlive: true,
-  rejectUnauthorized: false,
+app.get("/me", requireAuth, (req, res) => {
+  const user = users.get(req.auth!.userId);
+  if (!user) return res.status(401).json({ error: "Invalid token" });
+  res.json({ user: { id: user.wallet, role: user.role } });
 });
 
+// ---------- ADMIN ----------
+app.get("/admin/contests", requireAdmin, (req, res) => {
+  const data = Array.from(contests.values()).map((c) => ({
+    id: c.id,
+    name: c.name,
+    type: c.type,
+    entryFee: c.entryFee,
+    registrationOpen: c.registrationOpen,
+    participantsCount: c.participants.size,
+  }));
+  res.json({ contests: data });
+});
+
+// ---------- USER CONTESTS ----------
+app.post("/contests/:id/join", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  const contest = contests.get(id);
+  if (!contest) return res.status(404).json({ error: "Contest not found" });
+  const wallet = req.auth!.userId;
+  const { payNow } = req.body;
+
+  const paid = contest.entryFee === 0 || Boolean(payNow);
+  contest.participants.set(wallet, {
+    wallet,
+    joinedAt: Date.now(),
+    paid,
+    entryFee: contest.entryFee,
+    score: 0,
+    history: [],
+  });
+  contests.set(id, contest);
+  res.json({ joined: true });
+});
+
+// ---------- FPL DATA (Safe + Fallback) ----------
 async function safeFetchJson(url: string, cacheKey: string, res: any) {
   try {
     const cached = cache.get(cacheKey);
-    if (cached) {
-      console.log(`🟢 Serving ${cacheKey} from cache`);
-      return res.json(cached);
-    }
+    if (cached) return res.json(cached);
 
     const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; FST-App/1.0)",
-        Accept: "application/json",
-      },
-      agent,
+      headers: { "User-Agent": "Mozilla/5.0" },
+      agent: httpsAgent as any,
     });
 
     if (!response.ok) {
-      console.warn(`⚠️ Primary FPL source failed (${response.status}). Retrying via fallback...`);
-      const fallback = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
-      if (!fallback.ok) {
-        console.error("❌ Fallback proxy also failed:", fallback.statusText);
-        return res.status(502).json({ error: `Failed to fetch ${cacheKey}` });
-      }
+      console.warn(`⚠️ FPL fetch failed (${response.status}). Trying fallback proxy...`);
+      const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+      const fallback = await fetch(proxy);
+      if (!fallback.ok) return res.status(502).json({ error: "Failed to fetch FPL data" });
       const data = await fallback.json();
       cache.set(cacheKey, data);
-      console.log(`✅ Fetched ${cacheKey} from fallback`);
       return res.json(data);
     }
 
     const data = await response.json();
     cache.set(cacheKey, data);
-    console.log(`✅ Successfully fetched ${cacheKey}`);
-    return res.json(data);
+    res.json(data);
   } catch (err: any) {
-    console.error(`❌ ${cacheKey} error:`, err.message || err);
-    return res.status(500).json({ error: `Failed to fetch ${cacheKey}` });
+    console.error("❌ FPL fetch error:", err.message);
+    res.status(500).json({ error: "Failed to fetch FPL data" });
   }
 }
 
 app.get("/fpl/api/bootstrap-static/", (req, res) =>
   safeFetchJson("https://fantasy.premierleague.com/api/bootstrap-static/", "bootstrap", res)
 );
-
 app.get("/fpl/api/fixtures/", (req, res) =>
   safeFetchJson("https://fantasy.premierleague.com/api/fixtures/", "fixtures", res)
 );
 
-// ---------- ADMIN ----------
-app.get("/admin/contests", requireAdmin, (req, res) => {
-  res.json({
-    contests: [
-      { id: 1, name: "Weekly Realm", status: "active" },
-      { id: 2, name: "Free Realm", status: "completed" },
-    ],
-  });
-});
-
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
-// ---------- ROOT ----------
-app.get("/", (req, res) => {
-  res.send("✅ FST backend running successfully with fast FPL fallback & JWT auth!");
+app.get("/", (req, res) =>
+  res.send("✅ FST backend running successfully with fast FPL fallback!")
+);
+
+// ---------- START ----------
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
-
-// ---------- START SERVER ----------
-async function startServer() {
-  try {
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log("✅ Prefetched FPL data");
-    });
-  } catch (err) {
-    console.error("❌ Server start error:", err);
-  }
-}
-
-startServer();
