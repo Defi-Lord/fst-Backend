@@ -14,6 +14,7 @@ import NodeCache from "node-cache";
 import https from "https";
 
 import { issueJwt, requireAuth, requireAdmin, AuthUser } from "./middleware/auth";
+import authRoutes from "./routes/authRoutes.js"; // 👈 add at top
 
 dotenv.config();
 
@@ -31,7 +32,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
   "https://fst-mini-app.vercel.app",
-  "https://fst-mini-app-three.vercel.app",
+  "https://fst-mini-app-three.vercel.app", // ✅ must be here
   "https://fst-mini-app-git-feat-realms-free-and-21953f-defilords-projects.vercel.app",
 ];
 
