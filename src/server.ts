@@ -1,4 +1,4 @@
-// server.ts
+// src/server.ts
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -13,8 +13,8 @@ import morgan from "morgan";
 import NodeCache from "node-cache";
 import https from "https";
 
-import { issueJwt, requireAuth, requireAdmin, AuthUser } from "./middleware/auth";
-import authRoutes from "./routes/authRoutes.js"; // 👈 add at top
+import { issueJwt, requireAuth, requireAdmin } from "./middleware/auth.js";
+import authRoutes from "./routes/authRoutes.js"; // ✅ wallet auth routes
 
 dotenv.config();
 
@@ -32,7 +32,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
   "https://fst-mini-app.vercel.app",
-  "https://fst-mini-app-three.vercel.app", // ✅ must be here
+  "https://fst-mini-app-three.vercel.app",
   "https://fst-mini-app-git-feat-realms-free-and-21953f-defilords-projects.vercel.app",
 ];
 
@@ -48,8 +48,8 @@ app.use(
   })
 );
 
-// Preflight / OPTIONS fallback
-app.use((req, res, next) => {
+// Preflight fix
+app.options("*", (req, res) => {
   const origin = req.headers.origin;
   if (origin && allowedOrigins.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
@@ -57,8 +57,7 @@ app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") return res.sendStatus(200);
-  next();
+  res.sendStatus(200);
 });
 
 // ---------- CACHE ----------
@@ -133,7 +132,10 @@ function seedContests() {
 }
 seedContests();
 
-// ---------- AUTH ----------
+// ---------- WALLET AUTH ROUTES ----------
+app.use("/auth", authRoutes); // ✅ handles /auth/challenge + /auth/verify (new secure route)
+
+// ---------- LEGACY AUTH (still supported) ----------
 app.get("/auth/nonce", (req, res) => {
   const { address } = req.query;
   if (!address) return res.status(400).json({ error: "Missing address" });
@@ -141,7 +143,7 @@ app.get("/auth/nonce", (req, res) => {
   res.json({ nonce });
 });
 
-app.post("/auth/verify", async (req, res) => {
+app.post("/auth/verify-old", async (req, res) => {
   try {
     const { address, signature, message } = req.body;
     if (!address || !signature || !message)
@@ -227,7 +229,7 @@ app.post("/contests/:id/join", requireAuth, (req, res) => {
   res.json({ joined: true });
 });
 
-// ---------- FPL DATA (Safe + Fallback) ----------
+// ---------- FPL DATA ----------
 async function safeFetchJson(url: string, cacheKey: string, res: any) {
   try {
     const cached = cache.get(cacheKey);
@@ -242,7 +244,8 @@ async function safeFetchJson(url: string, cacheKey: string, res: any) {
       console.warn(`⚠️ FPL fetch failed (${response.status}). Trying fallback proxy...`);
       const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
       const fallback = await fetch(proxy);
-      if (!fallback.ok) return res.status(502).json({ error: "Failed to fetch FPL data" });
+      if (!fallback.ok)
+        return res.status(502).json({ error: "Failed to fetch FPL data" });
       const data = await fallback.json();
       cache.set(cacheKey, data);
       return res.json(data);
@@ -258,17 +261,24 @@ async function safeFetchJson(url: string, cacheKey: string, res: any) {
 }
 
 app.get("/fpl/api/bootstrap-static/", (req, res) =>
-  safeFetchJson("https://fantasy.premierleague.com/api/bootstrap-static/", "bootstrap", res)
+  safeFetchJson(
+    "https://fantasy.premierleague.com/api/bootstrap-static/",
+    "bootstrap",
+    res
+  )
 );
 app.get("/fpl/api/fixtures/", (req, res) =>
-  safeFetchJson("https://fantasy.premierleague.com/api/fixtures/", "fixtures", res)
+  safeFetchJson(
+    "https://fantasy.premierleague.com/api/fixtures/",
+    "fixtures",
+    res
+  )
 );
 
 // ---------- HEALTH ----------
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
-
 app.get("/", (req, res) =>
-  res.send("✅ FST backend running successfully with fast FPL fallback!")
+  res.send("✅ FST backend running successfully with wallet auth + CORS fixes!")
 );
 
 // ---------- START ----------
