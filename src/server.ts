@@ -27,30 +27,27 @@ const MONGO_URI =
 async function connectWithRetry(uri: string, attempts = 0) {
   try {
     await mongoose.connect(uri, {
-      // recommended options
       serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
-      // keep other defaults for Atlas SRV
     } as any);
     console.log("✅ MongoDB connected");
   } catch (err) {
     console.error("❌ MongoDB connection error:", err);
     if (attempts < 5) {
       const delay = 2000 * (attempts + 1);
-      console.log(`🔁 Retry MongoDB connection in ${delay}ms (attempt ${attempts + 1})`);
+      console.log(`🔁 Retrying MongoDB connection in ${delay}ms (attempt ${attempts + 1})`);
       setTimeout(() => connectWithRetry(uri, attempts + 1), delay);
     } else {
-      console.error("📛 Exhausted MongoDB retries. Please check Atlas IP whitelist / credentials.");
+      console.error("📛 MongoDB connection failed permanently.");
     }
   }
 }
 connectWithRetry(MONGO_URI);
 
-/* Close Mongoose on process termination */
 process.on("SIGINT", async () => {
   try {
     await mongoose.disconnect();
-    console.log("MongoDB disconnected on SIGINT");
+    console.log("MongoDB disconnected gracefully");
   } finally {
     process.exit(0);
   }
@@ -68,6 +65,7 @@ app.use(morgan("dev"));
 app.use(bodyParser.json({ limit: "1mb" }));
 
 /* --------------------------------- CORS ---------------------------------- */
+// ✅ Clean and safe CORS setup (fixes your frontend issue)
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
@@ -76,29 +74,17 @@ const allowedOrigins = [
   "https://fst-mini-app-git-feat-realms-free-and-21953f-defilords-projects.vercel.app",
 ];
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && (allowedOrigins.includes(origin) || process.env.NODE_ENV === "production")) {
-    res.header("Access-Control-Allow-Origin", origin);
-  }
-  res.header("Access-Control-Allow-Credentials", "true");
-  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") return res.sendStatus(200);
-  next();
-});
-
 app.use(
   cors({
-    origin: (origin, cb) => {
-      if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV === "production") {
-        cb(null, true);
-      } else {
-        console.warn(`🚫 CORS blocked: ${origin}`);
-        cb(new Error("Not allowed by CORS"));
-      }
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true); // allow server-to-server, Postman
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      console.warn(`🚫 CORS blocked: ${origin}`);
+      return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
@@ -181,7 +167,6 @@ app.post("/auth/verify", async (req, res) => {
     const role: Role = address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER";
     const token = issueJwt({ userId: address, role });
 
-    // upsert user
     await User.findOneAndUpdate(
       { wallet: address },
       { token, role, createdAt: new Date() },
@@ -256,37 +241,21 @@ async function safeFetchJson(url: string, cacheKey: string, res: any) {
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    // Attempt primary fetch
     const response = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0" },
       agent: httpsAgent as any,
-      // small timeout via serverSelection? node-fetch doesn't support timeout option in v2 easily;
     });
 
     const text = await response.text();
-
-    // If empty or invalid JSON, fallback to proxy
     let parsed: any = null;
+
     try {
       parsed = text ? JSON.parse(text) : null;
-    } catch (err) {
-      console.warn(`⚠️ Primary fetch returned invalid JSON (${url}) — attempting proxy fallback`);
-    }
-
-    if (!parsed) {
+    } catch {
+      console.warn(`⚠️ Invalid JSON from ${url}, using fallback proxy`);
       const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
       const fallbackRes = await fetch(proxy);
-      if (!fallbackRes.ok) {
-        console.warn("⚠️ Proxy fallback failed:", fallbackRes.status);
-        return res.status(502).json({ error: "Failed to fetch FPL data" });
-      }
-      const fallbackText = await fallbackRes.text();
-      try {
-        parsed = JSON.parse(fallbackText);
-      } catch (err) {
-        console.error("❌ Proxy returned invalid JSON too.");
-        return res.status(502).json({ error: "Failed to fetch FPL data" });
-      }
+      parsed = await fallbackRes.json();
     }
 
     cache.set(cacheKey, parsed);
