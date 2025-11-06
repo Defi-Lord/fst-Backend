@@ -65,7 +65,6 @@ app.use(morgan("dev"));
 app.use(bodyParser.json({ limit: "1mb" }));
 
 /* --------------------------------- CORS ---------------------------------- */
-// ✅ Clean and safe CORS setup (fixes your frontend issue)
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
@@ -77,7 +76,7 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin) return callback(null, true); // allow server-to-server, Postman
+      if (!origin) return callback(null, true);
       if (allowedOrigins.includes(origin)) return callback(null, true);
       console.warn(`🚫 CORS blocked: ${origin}`);
       return callback(new Error("Not allowed by CORS"));
@@ -241,25 +240,31 @@ async function safeFetchJson(url: string, cacheKey: string, res: any) {
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    const response = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      agent: httpsAgent as any,
-    });
+    const headers = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      Accept: "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
+    };
 
-    const text = await response.text();
-    let parsed: any = null;
-
-    try {
-      parsed = text ? JSON.parse(text) : null;
-    } catch {
-      console.warn(`⚠️ Invalid JSON from ${url}, using fallback proxy`);
-      const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-      const fallbackRes = await fetch(proxy);
-      parsed = await fallbackRes.json();
+    // Try primary source first
+    const response = await fetch(url, { headers, agent: httpsAgent as any });
+    if (!response.ok) {
+      console.warn(`⚠️ Primary fetch failed (${response.status}). Trying proxy...`);
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+      const proxyRes = await fetch(proxyUrl, { headers });
+      if (!proxyRes.ok) throw new Error(`Proxy fetch failed (${proxyRes.status})`);
+      const proxyData = await proxyRes.json();
+      cache.set(cacheKey, proxyData);
+      console.log(`✅ [Proxy] ${url}`);
+      return res.json(proxyData);
     }
 
-    cache.set(cacheKey, parsed);
-    res.json(parsed);
+    const data = await response.json();
+    if (!data) throw new Error("Empty JSON response from FPL");
+    cache.set(cacheKey, data);
+    console.log(`✅ [Primary] ${url}`);
+    return res.json(data);
   } catch (err: any) {
     console.error("❌ FPL fetch error:", err?.message || err);
     res.status(500).json({ error: "Failed to fetch FPL data" });
