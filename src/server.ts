@@ -205,8 +205,84 @@ app.get("/me", requireAuth, async (req, res) => {
 
 /* -------------------------------- ADMIN -------------------------------- */
 app.get("/admin/contests", requireAdmin, async (req, res) => {
-  const contests = await Contest.find({});
+  const contests = await Contest.find({}).sort({ createdAt: -1 });
   res.json({ contests });
+});
+
+// 🆕 Create contest
+app.post("/admin/contests", requireAdmin, async (req, res) => {
+  try {
+    const { name, type, entryFee } = req.body;
+    if (!name || !type) return res.status(400).json({ error: "Missing required fields" });
+
+    const contest = new Contest({
+      name,
+      type,
+      entryFee: entryFee || 0,
+      registrationOpen: true,
+      participants: [],
+    });
+    await contest.save();
+    res.json({ ok: true, contest });
+  } catch (err: any) {
+    console.error("❌ /admin/contests POST error:", err?.message || err);
+    res.status(500).json({ error: "Failed to create contest" });
+  }
+});
+
+// 🆕 Toggle registration
+app.patch("/admin/contests/:id/toggle", requireAdmin, async (req, res) => {
+  try {
+    const contest = await Contest.findById(req.params.id);
+    if (!contest) return res.status(404).json({ error: "Contest not found" });
+
+    contest.registrationOpen = !contest.registrationOpen;
+    await contest.save();
+    res.json({ ok: true, registrationOpen: contest.registrationOpen });
+  } catch (err: any) {
+    console.error("❌ /admin/contests/:id/toggle error:", err?.message || err);
+    res.status(500).json({ error: "Failed to toggle contest" });
+  }
+});
+
+// 🆕 Delete contest
+app.delete("/admin/contests/:id", requireAdmin, async (req, res) => {
+  try {
+    await Contest.findByIdAndDelete(req.params.id);
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error("❌ /admin/contests/:id DELETE error:", err?.message || err);
+    res.status(500).json({ error: "Failed to delete contest" });
+  }
+});
+
+/* ------------------------------- ADMIN USERS ------------------------------- */
+app.get("/admin/users", requireAdmin, async (req, res) => {
+  try {
+    const users = await User.find({}, { wallet: 1, role: 1, createdAt: 1, updatedAt: 1 }).sort({
+      createdAt: -1,
+    });
+    res.json({ ok: true, users });
+  } catch (err: any) {
+    console.error("❌ /admin/users error:", err?.message || err);
+    res.status(500).json({ error: "Failed to fetch users" });
+  }
+});
+
+app.get("/admin/users/:wallet", requireAdmin, async (req, res) => {
+  try {
+    const wallet = req.params.wallet;
+    const user = await User.findOne({ wallet });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const contests = await Contest.find({ "participants.wallet": wallet }).select(
+      "name type entryFee participants"
+    );
+    res.json({ ok: true, user, contests });
+  } catch (err: any) {
+    console.error("❌ /admin/users/:wallet error:", err?.message || err);
+    res.status(500).json({ error: "Failed to fetch user details" });
+  }
 });
 
 /* ------------------------------- USER JOIN ------------------------------- */
@@ -247,7 +323,6 @@ async function safeFetchJson(url: string, cacheKey: string, res: any) {
       "Accept-Language": "en-US,en;q=0.9",
     };
 
-    // Try primary source first
     const response = await fetch(url, { headers, agent: httpsAgent as any });
     if (!response.ok) {
       console.warn(`⚠️ Primary fetch failed (${response.status}). Trying proxy...`);
@@ -256,14 +331,12 @@ async function safeFetchJson(url: string, cacheKey: string, res: any) {
       if (!proxyRes.ok) throw new Error(`Proxy fetch failed (${proxyRes.status})`);
       const proxyData = await proxyRes.json();
       cache.set(cacheKey, proxyData);
-      console.log(`✅ [Proxy] ${url}`);
       return res.json(proxyData);
     }
 
     const data = await response.json();
     if (!data) throw new Error("Empty JSON response from FPL");
     cache.set(cacheKey, data);
-    console.log(`✅ [Primary] ${url}`);
     return res.json(data);
   } catch (err: any) {
     console.error("❌ FPL fetch error:", err?.message || err);
