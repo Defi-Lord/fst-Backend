@@ -129,7 +129,7 @@ const cache = new NodeCache({ stdTTL: 300 });
 const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 
 /* ------------------------------ FETCH HELPERS ------------------------------ */
-async function fetchJson(url: string) {
+async function robustFetchJson(url: string) {
   const headers = {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -138,18 +138,32 @@ async function fetchJson(url: string) {
     Referer: "https://fantasy.premierleague.com/",
     Origin: "https://fantasy.premierleague.com",
   };
+
   const cached = cache.get(url);
   if (cached) return cached;
-  let resp = await fetch(url, { headers, agent: httpsAgent as any });
-  if (resp.status === 403 || resp.status === 404) {
-    console.warn(`⚠️ FPL blocked ${url}, using proxy...`);
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    resp = await fetch(proxyUrl, { headers });
+
+  const proxies = [
+    url,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    `https://thingproxy.freeboard.io/fetch/${url}`,
+  ];
+
+  let lastError: any;
+  for (const proxy of proxies) {
+    try {
+      const resp = await fetch(proxy, { headers, agent: httpsAgent as any, timeout: 15000 });
+      if (resp.ok) {
+        const data = await resp.json();
+        cache.set(url, data);
+        return data;
+      }
+      lastError = `Status ${resp.status}`;
+    } catch (err: any) {
+      lastError = err.message;
+    }
   }
-  if (!resp.ok) throw new Error(`Fetch failed ${resp.status}`);
-  const data = await resp.json();
-  cache.set(url, data);
-  return data;
+  throw new Error(`All proxies failed for ${url}: ${lastError}`);
 }
 
 /* ------------------------- FPL SYNC + SNAPSHOT -------------------------- */
@@ -162,7 +176,7 @@ const lastSyncedEvent: Record<string, number | null> = {
 
 async function computeAndStoreSnapshots() {
   try {
-    const bootstrap = await fetchJson("https://fantasy.premierleague.com/api/bootstrap-static/");
+    const bootstrap = await robustFetchJson("https://fantasy.premierleague.com/api/bootstrap-static/");
     const current_event =
       Number(
         bootstrap?.event ||
@@ -176,7 +190,7 @@ async function computeAndStoreSnapshots() {
 
     let liveMap = new Map<number, number>();
     if (current_event) {
-      const live = await fetchJson(
+      const live = await robustFetchJson(
         `https://fantasy.premierleague.com/api/event/${current_event}/live/`
       );
       for (const el of live?.elements || []) {
@@ -227,7 +241,9 @@ async function computeAndStoreSnapshots() {
         }
       }
       lastSyncedEvent[realm] = gameweek;
+      console.log(`🧮 Updated ${entries.length} users for realm ${realm}`);
     }
+
     console.log(`✅ FPL sync completed for GW${current_event}`);
   } catch (err: any) {
     console.error("❌ computeAndStoreSnapshots error:", err?.message || err);
