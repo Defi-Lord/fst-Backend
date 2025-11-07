@@ -128,49 +128,6 @@ const History = mongoose.model("History", historySchema);
 const cache = new NodeCache({ stdTTL: 300 });
 const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 
-/* ------------------------------- WALLET AUTH ------------------------------- */
-const walletNonces = new Map<string, string>();
-
-app.post("/auth/challenge", (req, res) => {
-  const { address } = req.body;
-  if (!address) return res.status(400).json({ error: "Missing wallet address" });
-  const challenge = `Sign this message to verify your wallet: ${randomUUID()}`;
-  walletNonces.set(address, challenge);
-  res.json({ ok: true, challenge });
-});
-
-app.post("/auth/verify", async (req, res) => {
-  try {
-    const { address, signature, message } = req.body;
-    if (!address || !signature || !message)
-      return res.status(400).json({ error: "Missing required fields" });
-
-    const expected = walletNonces.get(address);
-    if (!expected || expected !== message)
-      return res.status(400).json({ error: "No challenge found" });
-
-    const publicKeyBytes = bs58.decode(address);
-    const signatureBytes = Uint8Array.from(Buffer.from(signature, "base64"));
-    const messageBytes = new TextEncoder().encode(message);
-    const isValid = nacl.sign.detached.verify(messageBytes, signatureBytes, publicKeyBytes);
-    if (!isValid) return res.status(401).json({ error: "Invalid signature" });
-
-    walletNonces.delete(address);
-    const role: Role = address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER";
-    const token = issueJwt({ userId: address, role });
-
-    await User.findOneAndUpdate(
-      { wallet: address },
-      { token, role },
-      { new: true, upsert: true }
-    );
-
-    res.json({ ok: true, token, role });
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || "Server error" });
-  }
-});
-
 /* ------------------------------ FETCH HELPERS ------------------------------ */
 async function fetchJson(url: string) {
   const headers = {
@@ -213,7 +170,9 @@ async function computeAndStoreSnapshots() {
           bootstrap?.events?.find((e: any) => e.is_current)?.id
       ) || 0;
     const elements = bootstrap?.elements || [];
-    const seasonPoints = new Map(elements.map((el: any) => [el.id, el.total_points || 0]));
+    const seasonPoints = new Map<number, number>(
+      elements.map((el: any) => [el.id, Number(el.total_points || 0)])
+    );
 
     let liveMap = new Map<number, number>();
     if (current_event) {
@@ -221,7 +180,7 @@ async function computeAndStoreSnapshots() {
         `https://fantasy.premierleague.com/api/event/${current_event}/live/`
       );
       for (const el of live?.elements || []) {
-        liveMap.set(el.id, el.stats?.total_points ?? 0);
+        liveMap.set(Number(el.id), Number(el.stats?.total_points ?? 0));
       }
     }
 
@@ -239,7 +198,11 @@ async function computeAndStoreSnapshots() {
         const ids = team.map((t: any) => t.playerId).filter(Boolean);
         let total = 0;
         for (const id of ids) {
-          total += realm === "FREE" ? seasonPoints.get(id) || 0 : liveMap.get(id) || 0;
+          const pts =
+            realm === "FREE"
+              ? (seasonPoints.get(id) as number | undefined) ?? 0
+              : (liveMap.get(id) as number | undefined) ?? 0;
+          total += pts;
         }
         return { wallet: u.wallet, points: Math.round(total) };
       });
