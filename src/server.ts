@@ -131,7 +131,6 @@ const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false 
 /* ------------------------------- WALLET AUTH ------------------------------- */
 const walletNonces = new Map<string, string>();
 
-// 🟢 Challenge
 app.post("/auth/challenge", (req, res) => {
   try {
     const { address } = req.body;
@@ -145,7 +144,6 @@ app.post("/auth/challenge", (req, res) => {
   }
 });
 
-// 🟢 Verify
 app.post("/auth/verify", async (req, res) => {
   try {
     const { address, signature, message } = req.body;
@@ -179,7 +177,6 @@ app.post("/auth/verify", async (req, res) => {
   }
 });
 
-// 🟢 Introspect
 app.post("/auth/introspect", async (req, res) => {
   try {
     const { token } = req.body;
@@ -192,21 +189,13 @@ app.post("/auth/introspect", async (req, res) => {
   }
 });
 
-// 🟢 Me
 app.get("/me", requireAuth, async (req, res) => {
   const user = await User.findOne({ wallet: req.auth!.userId });
   if (!user) return res.status(401).json({ error: "Invalid token" });
   res.json({ user: { id: user.wallet, role: user.role, displayName: user.displayName } });
 });
 
-/* ------------------------- FPL SYNC + SNAPSHOT -------------------------- */
-const lastSyncedEvent: Record<string, number | null> = {
-  FREE: null,
-  WEEKLY: null,
-  MONTHLY: null,
-  SEASONAL: null,
-};
-
+/* ---------------------------- FPL FETCH HELPER ---------------------------- */
 async function fetchJson(url: string) {
   const headers = {
     "User-Agent":
@@ -216,19 +205,39 @@ async function fetchJson(url: string) {
     Referer: "https://fantasy.premierleague.com/",
     Origin: "https://fantasy.premierleague.com",
   };
+
   const cached = cache.get(url);
   if (cached) return cached;
-  let resp = await fetch(url, { headers, agent: httpsAgent as any });
-  if (resp.status === 403 || resp.status === 404) {
-    console.warn(`⚠️ FPL blocked ${url}, using proxy...`);
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    resp = await fetch(proxyUrl, { headers });
+
+  const proxies = [
+    url,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    `https://thingproxy.freeboard.io/fetch/${url}`,
+  ];
+
+  for (const proxy of proxies) {
+    try {
+      const resp = await fetch(proxy, { headers, agent: httpsAgent as any, timeout: 15000 });
+      if (!resp.ok) throw new Error(`Bad status ${resp.status}`);
+      const data = await resp.json();
+      cache.set(url, data);
+      return data;
+    } catch (err: any) {
+      console.warn(`⚠️ Proxy failed (${proxy}): ${err.message}`);
+      continue;
+    }
   }
-  if (!resp.ok) throw new Error(`Fetch failed ${resp.status}`);
-  const data = await resp.json();
-  cache.set(url, data);
-  return data;
+  throw new Error(`All proxies failed for ${url}`);
 }
+
+/* ------------------------- FPL SYNC + SNAPSHOT -------------------------- */
+const lastSyncedEvent: Record<string, number | null> = {
+  FREE: null,
+  WEEKLY: null,
+  MONTHLY: null,
+  SEASONAL: null,
+};
 
 async function computeAndStoreSnapshots() {
   try {
