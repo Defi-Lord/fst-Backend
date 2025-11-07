@@ -44,10 +44,23 @@ async function connectWithRetry(uri: string, attempts = 0) {
 }
 connectWithRetry(MONGO_URI);
 
+process.on("SIGINT", async () => {
+  try {
+    await mongoose.disconnect();
+    console.log("MongoDB disconnected gracefully");
+  } finally {
+    process.exit(0);
+  }
+});
+
 /* ------------------------------ SECURITY SETUP ------------------------------ */
 app.set("trust proxy", 1);
 app.use(cookieParser());
-app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+  })
+);
 app.use(morgan("dev"));
 app.use(bodyParser.json({ limit: "1mb" }));
 
@@ -77,16 +90,14 @@ app.use(
 /* ----------------------------- Mongoose Models ----------------------------- */
 type Role = "USER" | "ADMIN";
 
-const userSchema = new mongoose.Schema(
-  {
-    wallet: { type: String, unique: true },
-    token: String,
-    role: { type: String, default: "USER" },
-    team: [{ playerId: Number }],
-    displayName: { type: String, default: null },
-  },
-  { timestamps: true }
-);
+const userSchema = new mongoose.Schema({
+  wallet: { type: String, unique: true },
+  token: String,
+  role: { type: String, default: "USER" },
+  team: [{ playerId: Number }],
+  displayName: { type: String, default: null },
+  createdAt: { type: Date, default: Date.now },
+});
 
 const contestSchema = new mongoose.Schema(
   {
@@ -95,16 +106,22 @@ const contestSchema = new mongoose.Schema(
     entryFee: Number,
     registrationOpen: Boolean,
     participants: [
-      { wallet: String, paid: Boolean, entryFee: Number, score: Number, joinedAt: Date },
+      {
+        wallet: String,
+        paid: Boolean,
+        entryFee: Number,
+        score: Number,
+        joinedAt: Date,
+      },
     ],
   },
   { timestamps: true }
 );
 
-const snapshotSchema = new mongoose.Schema(
+const leaderboardSnapshotSchema = new mongoose.Schema(
   {
-    realm: String,
-    gameweek: Number,
+    realm: { type: String, enum: ["FREE", "WEEKLY", "MONTHLY", "SEASONAL"], required: true },
+    gameweek: { type: Number, required: true },
     entries: [{ wallet: String, points: Number }],
   },
   { timestamps: true }
@@ -112,8 +129,8 @@ const snapshotSchema = new mongoose.Schema(
 
 const historySchema = new mongoose.Schema(
   {
-    realm: String,
-    gameweek: Number,
+    realm: { type: String, enum: ["FREE", "WEEKLY", "MONTHLY", "SEASONAL"], required: true },
+    gameweek: { type: Number, required: true },
     entries: [{ wallet: String, points: Number }],
   },
   { timestamps: true }
@@ -121,141 +138,67 @@ const historySchema = new mongoose.Schema(
 
 const User = mongoose.model("User", userSchema);
 const Contest = mongoose.model("Contest", contestSchema);
-const LeaderboardSnapshot = mongoose.model("LeaderboardSnapshot", snapshotSchema);
+const LeaderboardSnapshot = mongoose.model("LeaderboardSnapshot", leaderboardSnapshotSchema);
 const History = mongoose.model("History", historySchema);
 
 /* -------------------------- Cache + HTTPS Agent --------------------------- */
 const cache = new NodeCache({ stdTTL: 300 });
 const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 
-/* ------------------------------ FETCH HELPERS ------------------------------ */
-async function robustFetchJson(url: string) {
-  const headers = {
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    Accept: "application/json,text/plain,*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-    Referer: "https://fantasy.premierleague.com/",
-    Origin: "https://fantasy.premierleague.com",
-  };
+/* ------------------------------- WALLET AUTH ------------------------------- */
+// ... (no changes in auth, admin, or contest routes)
 
-  const cached = cache.get(url);
-  if (cached) return cached;
-
-  const proxies = [
-    url,
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-    `https://corsproxy.io/?${encodeURIComponent(url)}`,
-    `https://thingproxy.freeboard.io/fetch/${url}`,
-  ];
-
-  let lastError: any;
-  for (const proxy of proxies) {
-    try {
-      const resp = await fetch(proxy, { headers, agent: httpsAgent as any, timeout: 15000 });
-      if (resp.ok) {
-        const data = await resp.json();
-        cache.set(url, data);
-        return data;
-      }
-      lastError = `Status ${resp.status}`;
-    } catch (err: any) {
-      lastError = err.message;
-    }
-  }
-  throw new Error(`All proxies failed for ${url}: ${lastError}`);
-}
-
-/* ------------------------- FPL SYNC + SNAPSHOT -------------------------- */
-const lastSyncedEvent: Record<string, number | null> = {
-  FREE: null,
-  WEEKLY: null,
-  MONTHLY: null,
-  SEASONAL: null,
-};
-
-async function computeAndStoreSnapshots() {
+/* ------------------------------ FPL PROXY ENDPOINTS ------------------------------ */
+async function safeFetchJson(url: string, cacheKey: string, res: any) {
   try {
-    const bootstrap = await robustFetchJson("https://fantasy.premierleague.com/api/bootstrap-static/");
-    const current_event =
-      Number(
-        bootstrap?.event ||
-          bootstrap?.current_event ||
-          bootstrap?.events?.find((e: any) => e.is_current)?.id
-      ) || 0;
-    const elements = bootstrap?.elements || [];
-    const seasonPoints = new Map<number, number>(
-      elements.map((el: any) => [el.id, Number(el.total_points || 0)])
-    );
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
 
-    let liveMap = new Map<number, number>();
-    if (current_event) {
-      const live = await robustFetchJson(
-        `https://fantasy.premierleague.com/api/event/${current_event}/live/`
-      );
-      for (const el of live?.elements || []) {
-        liveMap.set(Number(el.id), Number(el.stats?.total_points ?? 0));
-      }
+    const headers = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+      Accept: "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
+    };
+
+    const response = await fetch(url, { headers, agent: httpsAgent as any });
+    if (!response.ok) {
+      console.warn(`⚠️ Primary fetch failed (${response.status}). Trying proxy...`);
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+      const proxyRes = await fetch(proxyUrl, { headers });
+      if (!proxyRes.ok) throw new Error(`Proxy fetch failed (${proxyRes.status})`);
+      const proxyData = await proxyRes.json();
+      cache.set(cacheKey, proxyData);
+      return res.json(proxyData);
     }
 
-    const allUsers = await User.find({}).lean();
-    const realms: Array<"FREE" | "WEEKLY" | "MONTHLY" | "SEASONAL"> = [
-      "FREE",
-      "WEEKLY",
-      "MONTHLY",
-      "SEASONAL",
-    ];
-
-    for (const realm of realms) {
-      const entries = allUsers.map((u) => {
-        const team = Array.isArray(u.team) ? u.team : [];
-        const ids = team.map((t: any) => t.playerId).filter(Boolean);
-        let total = 0;
-        for (const id of ids) {
-          const pts =
-            realm === "FREE"
-              ? (seasonPoints.get(id) as number | undefined) ?? 0
-              : (liveMap.get(id) as number | undefined) ?? 0;
-          total += pts;
-        }
-        return { wallet: u.wallet, points: Math.round(total) };
-      });
-
-      entries.sort((a, b) => b.points - a.points);
-      const gameweek = current_event || 0;
-
-      await LeaderboardSnapshot.findOneAndUpdate(
-        { realm, gameweek },
-        { realm, gameweek, entries },
-        { upsert: true }
-      );
-
-      const last = lastSyncedEvent[realm];
-      if (last != null && last !== gameweek) {
-        const prevSnap = await LeaderboardSnapshot.findOne({ realm, gameweek: last }).lean();
-        if (prevSnap && !(await History.findOne({ realm, gameweek: last }))) {
-          await new History(prevSnap).save();
-          const toKeep = await History.find({ realm }).sort({ gameweek: -1 }).limit(10);
-          const keepIds = toKeep.map((d: any) => d._id);
-          await History.deleteMany({ realm, _id: { $nin: keepIds } });
-        }
-      }
-      lastSyncedEvent[realm] = gameweek;
-      console.log(`🧮 Updated ${entries.length} users for realm ${realm}`);
-    }
-
-    console.log(`✅ FPL sync completed for GW${current_event}`);
+    const data = await response.json();
+    if (!data) throw new Error("Empty JSON response from FPL");
+    cache.set(cacheKey, data);
+    return res.json(data);
   } catch (err: any) {
-    console.error("❌ computeAndStoreSnapshots error:", err?.message || err);
+    console.error("❌ FPL fetch error:", err?.message || err);
+    res.status(500).json({ error: "Failed to fetch FPL data" });
   }
 }
 
-setInterval(computeAndStoreSnapshots, 1000 * 60 * 60);
-computeAndStoreSnapshots();
+// ✅ Updated routes to support both with and without trailing slash
+app.get(["/fpl/api/bootstrap-static", "/fpl/api/bootstrap-static/"], (req, res) =>
+  safeFetchJson("https://fantasy.premierleague.com/api/bootstrap-static/", "bootstrap", res)
+);
+
+app.get(["/fpl/api/fixtures", "/fpl/api/fixtures/"], (req, res) =>
+  safeFetchJson("https://fantasy.premierleague.com/api/fixtures/", "fixtures", res)
+);
 
 /* ------------------------------- HEALTH ------------------------------- */
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 app.get("/", (req, res) => res.send("✅ FST backend running with MongoDB + Wallet Auth + CORS!"));
+
+// ✅ 404 fallback (handles unknown routes cleanly)
+app.use((req, res) => {
+  res.status(404).json({ error: `Route not found: ${req.originalUrl}` });
+});
 
 /* ------------------------------- START ------------------------------- */
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
