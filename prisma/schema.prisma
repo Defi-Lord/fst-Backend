@@ -8,12 +8,9 @@ generator client {
   provider = "prisma-client-js"
 }
 
-//
-// ─── USER AND WALLET MODELS ────────────────────────────────────────────────
-//
 model User {
   id           String             @id @default(cuid())
-  telegramId   String             @unique
+  telegramId   String?            @unique
   createdAt    DateTime           @default(now())
   updatedAt    DateTime           @updatedAt
   displayName  String?
@@ -29,9 +26,20 @@ model User {
 model Wallet {
   id        String   @id @default(cuid())
   address   String   @unique
-  nonce     String?  // optional nonce for signature verification
+  nonce     String?
   createdAt DateTime @default(now())
   users     User[]
+  txs       Transaction[]
+}
+
+model Transaction {
+  id          String   @id @default(cuid())
+  wallet      Wallet   @relation(fields: [walletId], references: [id])
+  walletId    String
+  txSignature String   @unique
+  amount      Float
+  confirmed   Boolean  @default(false)
+  createdAt   DateTime @default(now())
 }
 
 enum Role {
@@ -39,26 +47,15 @@ enum Role {
   ADMIN
 }
 
-//
-// ─── NONCE MODEL (USED FOR WALLET LOGIN) ─────────────────────────────────────
-//
-model Nonce {
-  address   String  @id
-  nonce     String
-  createdAt DateTime @default(now())
-}
-
-//
-// ─── CONTEST / GAMEPLAY MODELS ──────────────────────────────────────────────
-//
 model Contest {
   id             String             @id @default(cuid())
   slug           String             @unique
   title          String
   realm          Realm
   status         ContestStatus      @default(OPEN)
+  entryFee       Float              @default(0)
+  registrationOpen Boolean          @default(true)
   playersLimit   Int
-  transferpool   Int                @default(0)
   prizePoolCents Int                @default(0)
   payoutRules    PayoutRule[]
   entries        ContestEntry[]
@@ -87,20 +84,20 @@ model PayoutRule {
   contestId String
   rank      Int
   percent   Float
-
   @@unique([contestId, rank])
 }
 
 model ContestEntry {
-  id        String   @id @default(cuid())
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String
-  contest   Contest  @relation(fields: [contestId], references: [id])
-  contestId String
-  address   String
-  paid      Boolean  @default(false)
-  createdAt DateTime @default(now())
-
+  id          String   @id @default(cuid())
+  user        User     @relation(fields: [userId], references: [id])
+  userId      String
+  contest     Contest  @relation(fields: [contestId], references: [id])
+  contestId   String
+  address     String
+  paid        Boolean  @default(false)
+  txSignature String?
+  amount      Float?
+  createdAt   DateTime @default(now())
   @@unique([userId, contestId])
 }
 
@@ -114,9 +111,7 @@ model Team {
   playerIds String[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
   @@index([userId, realm])
-  @@index([userId, contestId])
 }
 
 model LeaderboardEntry {
@@ -128,7 +123,6 @@ model LeaderboardEntry {
   points    Int      @default(0)
   rank      Int?
   updatedAt DateTime @updatedAt
-
   @@unique([contestId, userId])
 }
 
