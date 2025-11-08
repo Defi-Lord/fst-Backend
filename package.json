@@ -5,10 +5,10 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
-    "build": "npx prisma generate && npx prisma db push && tsc && node --no-warnings ./node_modules/prisma/build/index.js generate",
-    "migrate:dev": "prisma migrate dev",
-    "migrate:deploy": "prisma migrate deploy",
-    "prisma:gen": "prisma generate",
+    "build": "node ./node_modules/prisma/build/index.js generate && node ./node_modules/prisma/build/index.js db push && tsc",
+    "migrate:dev": "npx prisma migrate dev",
+    "migrate:deploy": "npx prisma migrate deploy",
+    "prisma:gen": "node ./node_modules/prisma/build/index.js generate",
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
