@@ -78,21 +78,15 @@ router.post("/auth/nonce", async (req: Request, res: Response) => {
         .json({ success: false, message: "Wallet address is required" });
     }
 
-    let nonce = await prisma.nonce.findUnique({ where: { address } });
     const newNonceValue = generateNonce();
 
-    if (nonce) {
-      nonce = await prisma.nonce.update({
-        where: { address },
-        data: { nonce: newNonceValue },
-      });
-      console.log(`🔁 Nonce refreshed for wallet ${address}`);
-    } else {
-      nonce = await prisma.nonce.create({
-        data: { address, nonce: newNonceValue },
-      });
-      console.log(`🆕 Nonce created for wallet ${address}`);
-    }
+    const nonce = await prisma.nonce.upsert({
+      where: { address },
+      update: { nonce: newNonceValue, createdAt: new Date() },
+      create: { address, nonce: newNonceValue },
+    });
+
+    console.log(`🔁 Nonce generated for wallet ${address}`);
 
     return res.status(200).json({ success: true, nonce: nonce.nonce });
   } catch (error) {

@@ -52,7 +52,7 @@ model Transaction {
 // ─── NONCE MODEL (for wallet login challenge) ────────────────────────────────
 //
 model Nonce {
-  address   String  @id
+  address   String   @id
   nonce     String
   createdAt DateTime @default(now())
 }
