@@ -8,6 +8,9 @@ generator client {
   provider = "prisma-client-js"
 }
 
+//
+// ─── USER + WALLET SYSTEM ────────────────────────────────────────────────
+//
 model User {
   id           String             @id @default(cuid())
   telegramId   String?            @unique
@@ -17,6 +20,8 @@ model User {
   wallet       Wallet?            @relation(fields: [walletId], references: [id])
   walletId     String?            @unique
   role         Role               @default(USER)
+
+  // Relationships
   entries      ContestEntry[]
   teams        Team[]
   adminActions AdminAction[]
@@ -24,22 +29,32 @@ model User {
 }
 
 model Wallet {
-  id        String   @id @default(cuid())
-  address   String   @unique
-  nonce     String?
-  createdAt DateTime @default(now())
+  id        String         @id @default(cuid())
+  address   String         @unique
+  nonce     String?        // optional nonce for signature verification
+  createdAt DateTime       @default(now())
+
   users     User[]
   txs       Transaction[]
 }
 
 model Transaction {
-  id          String   @id @default(cuid())
-  wallet      Wallet   @relation(fields: [walletId], references: [id])
+  id          String     @id @default(cuid())
+  wallet      Wallet     @relation(fields: [walletId], references: [id])
   walletId    String
-  txSignature String   @unique
+  txSignature String     @unique
   amount      Float
-  confirmed   Boolean  @default(false)
-  createdAt   DateTime @default(now())
+  confirmed   Boolean    @default(false)
+  createdAt   DateTime   @default(now())
+}
+
+//
+// ─── NONCE MODEL (for wallet login challenge) ────────────────────────────────
+//
+model Nonce {
+  address   String  @id
+  nonce     String
+  createdAt DateTime @default(now())
 }
 
 enum Role {
@@ -47,22 +62,27 @@ enum Role {
   ADMIN
 }
 
+//
+// ─── CONTEST SYSTEM ─────────────────────────────────────────────────────
+//
 model Contest {
-  id             String             @id @default(cuid())
-  slug           String             @unique
-  title          String
-  realm          Realm
-  status         ContestStatus      @default(OPEN)
-  entryFee       Float              @default(0)
-  registrationOpen Boolean          @default(true)
-  playersLimit   Int
-  prizePoolCents Int                @default(0)
-  payoutRules    PayoutRule[]
-  entries        ContestEntry[]
-  leaderboard    LeaderboardEntry[]
-  teams          Team[]
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
+  id               String             @id @default(cuid())
+  slug             String             @unique
+  title            String
+  realm            Realm
+  status           ContestStatus      @default(OPEN)
+  entryFee         Float              @default(0)
+  registrationOpen Boolean            @default(true)
+  playersLimit     Int?
+  prizePoolCents   Int                @default(0)
+
+  payoutRules      PayoutRule[]
+  entries          ContestEntry[]
+  leaderboard      LeaderboardEntry[]
+  teams            Team[]
+
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
 }
 
 enum ContestStatus {
@@ -79,8 +99,8 @@ enum Realm {
 }
 
 model PayoutRule {
-  id        String  @id @default(cuid())
-  contest   Contest @relation(fields: [contestId], references: [id])
+  id        String   @id @default(cuid())
+  contest   Contest  @relation(fields: [contestId], references: [id])
   contestId String
   rank      Int
   percent   Float
@@ -88,41 +108,48 @@ model PayoutRule {
 }
 
 model ContestEntry {
-  id          String   @id @default(cuid())
-  user        User     @relation(fields: [userId], references: [id])
+  id          String     @id @default(cuid())
+  user        User       @relation(fields: [userId], references: [id])
   userId      String
-  contest     Contest  @relation(fields: [contestId], references: [id])
+  contest     Contest    @relation(fields: [contestId], references: [id])
   contestId   String
   address     String
-  paid        Boolean  @default(false)
+  paid        Boolean    @default(false)
   txSignature String?
   amount      Float?
-  createdAt   DateTime @default(now())
+  joinedAt    DateTime   @default(now())
+  createdAt   DateTime   @default(now())
+
   @@unique([userId, contestId])
 }
 
 model Team {
-  id        String   @id @default(cuid())
-  user      User     @relation(fields: [userId], references: [id])
+  id        String     @id @default(cuid())
+  user      User       @relation(fields: [userId], references: [id])
   userId    String
-  contest   Contest? @relation(fields: [contestId], references: [id])
+  contest   Contest?   @relation(fields: [contestId], references: [id])
   contestId String?
   realm     Realm
   playerIds String[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
   @@index([userId, realm])
 }
 
+//
+// ─── LEADERBOARD + ADMIN MODELS ─────────────────────────────────────────
+//
 model LeaderboardEntry {
-  id        String   @id @default(cuid())
-  contest   Contest  @relation(fields: [contestId], references: [id])
+  id        String     @id @default(cuid())
+  contest   Contest    @relation(fields: [contestId], references: [id])
   contestId String
-  user      User     @relation(fields: [userId], references: [id])
+  user      User       @relation(fields: [userId], references: [id])
   userId    String
-  points    Int      @default(0)
+  points    Int        @default(0)
   rank      Int?
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime   @updatedAt
+
   @@unique([contestId, userId])
 }
 
