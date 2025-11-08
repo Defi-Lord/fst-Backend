@@ -14,7 +14,7 @@ import NodeCache from "node-cache";
 import https from "https";
 import mongoose from "mongoose";
 import { issueJwt, requireAuth, requireAdmin } from "./middleware/auth.js";
-import { Connection, clusterApiUrl, PublicKey } from "@solana/web3.js";
+import { Connection, clusterApiUrl } from "@solana/web3.js";
 
 dotenv.config();
 
@@ -58,17 +58,21 @@ const allowedOrigins = [
   "http://localhost:5174",
   "https://fst-mini-app.vercel.app",
   "https://fst-mini-app-three.vercel.app",
-  "https://fst-mini-app-git-feat-realms-free-and-21953f-defilords-projects.vercel.app",
+  "https://fst-mini-app-git-feat-realms-free-and-contest-defi-lord.vercel.app",
+  "https://fst-mini-app-git-feat-realms-free-and-contest-defilords-projects.vercel.app",
 ];
+
 app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (allowedOrigins.includes(origin)) return callback(null, true);
-      console.warn(`🚫 CORS blocked: ${origin}`);
+      console.warn(`🚫 CORS blocked request from: ${origin}`);
       return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
@@ -109,7 +113,7 @@ const contestSchema = new mongoose.Schema(
 const transactionSchema = new mongoose.Schema(
   {
     wallet: String,
-    txSignature: String,
+    txSignature: { type: String, unique: true },
     amount: Number,
     confirmed: Boolean,
   },
@@ -175,12 +179,20 @@ const solana = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
 async function verifySolanaTx(signature: string, expectedWallet: string, minAmountLamports: number) {
   try {
     const tx = await solana.getTransaction(signature, { commitment: "confirmed" });
-    if (!tx) return false;
-    const postBalances = tx.meta?.postBalances ?? [];
-    const preBalances = tx.meta?.preBalances ?? [];
-    const sender = tx.transaction.message.accountKeys[0].toBase58();
-    if (sender !== expectedWallet) return false;
-    const diff = preBalances[0] - postBalances[0];
+    if (!tx) {
+      console.warn(`⚠️ Transaction not found: ${signature}`);
+      return false;
+    }
+
+    const accountKeys = tx.transaction.message.accountKeys.map((k) => k.toBase58());
+    if (!accountKeys.includes(expectedWallet)) {
+      console.warn(`⚠️ Wallet ${expectedWallet} not in tx ${signature}`);
+      return false;
+    }
+
+    const post = tx.meta?.postBalances ?? [];
+    const pre = tx.meta?.preBalances ?? [];
+    const diff = pre[0] - post[0];
     return diff >= minAmountLamports;
   } catch (err) {
     console.error("verifySolanaTx error:", err);
@@ -198,6 +210,25 @@ app.post("/contests/:id/join", requireAuth, async (req, res) => {
     const contest = await Contest.findById(id);
     if (!contest || !contest.registrationOpen)
       return res.status(400).json({ error: "Contest not open" });
+
+    // Free contests skip payment verification
+    if (contest.entryFee === 0) {
+      const exists = contest.participants.find((p: any) => p.wallet === wallet);
+      if (!exists) {
+        contest.participants.push({
+          wallet,
+          paid: true,
+          entryFee: 0,
+          txSignature: null,
+          score: 0,
+          joinedAt: new Date(),
+        });
+        await contest.save();
+      }
+      return res.json({ ok: true, message: "Joined free contest" });
+    }
+
+    if (!txSignature) return res.status(400).json({ error: "Missing transaction signature" });
 
     const lamports = (contest.entryFee || 0) * 1e9;
     const verified = await verifySolanaTx(txSignature, wallet, lamports);
