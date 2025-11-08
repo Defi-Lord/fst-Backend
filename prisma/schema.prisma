@@ -31,7 +31,7 @@ model User {
 model Wallet {
   id        String         @id @default(cuid())
   address   String         @unique
-  nonce     String?        // optional nonce for signature verification
+  nonce     String?        // Optional nonce for signature verification
   createdAt DateTime       @default(now())
 
   users     User[]
@@ -51,9 +51,9 @@ model Transaction {
 //
 // ─── NONCE MODEL (for wallet login challenge) ────────────────────────────────
 //
-
 model Nonce {
-  address   String   @id
+  id        String   @id @default(cuid())
+  address   String   @unique
   nonce     String
   createdAt DateTime @default(now())
 }
