@@ -204,12 +204,17 @@ app.get("/fpl/api/*", async (req, res) => {
     const response = await fetch(url, {
       agent: httpsAgent,
       headers: {
-        "User-Agent": randomUA,
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
         "Accept": "application/json,text/plain,*/*",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://fantasy.premierleague.com/",
+        "Origin": "https://fantasy.premierleague.com",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
       },
-    });
+    });    
 
     if (!response.ok) {
       console.warn(`⚠️ Upstream FPL API error: ${response.status}`);
