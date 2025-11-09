@@ -190,64 +190,45 @@ app.post("/auth/introspect", requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------- FPL API PROXY ---------------------------- */
+/* ---------------------------- FPL API PROXY (fixed) ---------------------------- */
 app.get("/fpl/api/*", async (req, res) => {
   try {
     const endpoint = req.params[0];
     const url = `https://fantasy.premierleague.com/api/${endpoint}`;
-    const cached = cache.get(url);
+    const cacheKey = `fpl:${url}`;
+    const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    // Random realistic User-Agent (helps bypass 403 blocks)
-    const userAgents = [
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17 Safari/605.1.15",
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36",
-    ];
-    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+    // Use a free relay proxy to bypass FPL geo-block
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
 
-    const response = await fetch(url, {
-      agent: httpsAgent,
+    const response = await fetch(proxyUrl, {
       headers: {
-        "User-Agent": randomUA,
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
         "Accept": "application/json,text/plain,*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://fantasy.premierleague.com/",
-        "Origin": "https://fantasy.premierleague.com",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
       },
     });
 
     if (!response.ok) {
-      console.warn(`⚠️ Upstream FPL API error: ${response.status}`);
-      // ✅ Fallback: serve last cached copy if exists
-      const fallback = cache.get(url);
+      console.warn(`⚠️ FPL upstream returned ${response.status}`);
+      const fallback = cache.get(cacheKey);
       if (fallback) {
-        console.log("⚡ Serving cached FPL data (fallback)");
+        console.log("⚡ Serving cached fallback FPL data");
         return res.json(fallback);
       }
-      return res.status(502).json({
-        error: "FPL upstream blocked request",
-        status: response.status,
-      });
+      return res.status(502).json({ error: "FPL upstream blocked request" });
     }
 
     const data = await response.json();
-    cache.set(url, data);
+    cache.set(cacheKey, data);
     res.json(data);
   } catch (err) {
     console.error("❌ FPL proxy error:", err);
-    const cachedUrls = cache.keys();
-    if (cachedUrls.length > 0) {
-      console.log("⚡ Serving last known cached FPL data (network failover)");
-      const anyCached = cache.get(cachedUrls[0]);
-      return res.json(anyCached || { error: "Cached data unavailable" });
-    }
     res.status(500).json({ error: "FPL proxy failed" });
   }
 });
+
 
 /* -------------------------- VERIFY PAYMENT -------------------------- */
 const solana = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
