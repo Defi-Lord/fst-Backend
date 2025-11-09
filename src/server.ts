@@ -37,9 +37,7 @@ async function connectWithRetry(uri: string, attempts = 0) {
     console.error("❌ MongoDB connection error:", err);
     if (attempts < 5) {
       const delay = 2000 * (attempts + 1);
-      console.log(
-        `🔁 Retrying MongoDB connection in ${delay}ms (attempt ${attempts + 1})`
-      );
+      console.log(`🔁 Retrying MongoDB connection in ${delay}ms (attempt ${attempts + 1})`);
       setTimeout(() => connectWithRetry(uri, attempts + 1), delay);
     } else {
       console.error("📛 MongoDB connection failed permanently.");
@@ -150,7 +148,7 @@ app.post("/auth/challenge", (req, res) => {
     const challenge = `Sign this message to verify your wallet: ${randomUUID()}`;
     walletNonces.set(address, challenge);
     res.json({ ok: true, challenge });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -194,15 +192,12 @@ app.post("/auth/introspect", requireAuth, async (req, res) => {
 
 /* ---------------------------- FPL API PROXY (DB + CACHE) ---------------------------- */
 app.get("/fpl/api/*", async (req, res) => {
+  const endpoint = req.params[0];
+  const key = `fpl:${endpoint}`;
   try {
-    const endpoint = req.params[0];
-    const key = `fpl:${endpoint}`;
-
-    // Check cache first
     const cached = cache.get(key);
     if (cached) return res.json(cached);
 
-    // Try DB fallback if FPL fails
     const url = `https://fantasy.premierleague.com/api/${endpoint}`;
     const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
 
@@ -216,16 +211,11 @@ app.get("/fpl/api/*", async (req, res) => {
 
     const data = await response.json();
     cache.set(key, data);
-    await FPLCache.findOneAndUpdate(
-      { key },
-      { data, lastUpdated: new Date() },
-      { upsert: true }
-    );
-
+    await FPLCache.findOneAndUpdate({ key }, { data, lastUpdated: new Date() }, { upsert: true });
     res.json(data);
   } catch (err) {
     console.error("❌ FPL proxy error:", err);
-    const dbData = await FPLCache.findOne({ key: req.params[0] });
+    const dbData = await FPLCache.findOne({ key });
     if (dbData) return res.json(dbData.data);
     res.status(500).json({ error: "FPL proxy failed" });
   }
@@ -253,7 +243,29 @@ async function refreshFPLData() {
   }
 }
 cron.schedule("0 * * * *", refreshFPLData); // every hour
-setTimeout(refreshFPLData, 5000); // initial refresh on boot
+setTimeout(refreshFPLData, 5000); // initial refresh after boot
+
+/* ----------------------------- ADMIN FPL CACHE INSPECT ----------------------------- */
+app.get("/admin/fpl-cache", async (req, res) => {
+  const adminWallet = process.env.ADMIN_WALLET_ADDRESS;
+  const wallet = req.query.wallet as string;
+  if (wallet !== adminWallet) return res.status(403).json({ error: "Forbidden" });
+  try {
+    const caches = await FPLCache.find().sort({ updatedAt: -1 });
+    res.json({
+      ok: true,
+      count: caches.length,
+      data: caches.map((c) => ({
+        key: c.key,
+        lastUpdated: c.lastUpdated,
+        size: JSON.stringify(c.data).length,
+      })),
+    });
+  } catch (err) {
+    console.error("❌ Cache inspect error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 /* -------------------------- VERIFY PAYMENT -------------------------- */
 const solana = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
@@ -305,8 +317,7 @@ app.post("/contests/:id/join", requireAuth, async (req, res) => {
     return res.json({ ok: true, message: "Joined free contest" });
   }
 
-  if (!txSignature)
-    return res.status(400).json({ error: "Missing transaction signature" });
+  if (!txSignature) return res.status(400).json({ error: "Missing transaction signature" });
 
   const lamports = (contest.entryFee || 0) * 1e9;
   const verified = await verifySolanaTx(txSignature, wallet, lamports);
