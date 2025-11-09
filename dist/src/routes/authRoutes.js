@@ -1,33 +1,21 @@
-import express from "express";
+import { Router } from "express";
 import { PrismaClient } from "@prisma/client";
-const router = express.Router();
+const router = Router();
 const prisma = new PrismaClient();
-router.post("/telegram", async (req, res) => {
+router.post("/register", async (req, res) => {
     try {
-        const { telegramId, username } = req.body;
-        console.log("📩 Received:", { telegramId, username }); // log the incoming data
-        if (!telegramId || !username) {
-            return res.status(400).json({ success: false, message: "Missing data" });
+        const { id, displayName } = req.body; // ✅ Get from request body
+        if (!id || !displayName) {
+            return res.status(400).json({ error: "Missing id or displayName" });
         }
-        // check if the user exists using the ID
-        let user = await prisma.user.findUnique({
-            where: { id: telegramId },
+        const user = await prisma.user.create({
+            data: { id, displayName, telegramId: id },
         });
-        if (!user) {
-            console.log("🆕 Creating new user...");
-            user = await prisma.user.create({
-                data: { id, displayName, telegramId: id },
-            });
-            console.log("✅ User created:", user);
-        }
-        else {
-            console.log("👤 Existing user found:", user);
-        }
-        return res.json({ success: true, user });
+        res.status(201).json(user);
     }
-    catch (err) {
-        console.error("❌ Error in /auth/telegram route:", err);
-        return res.status(500).json({ success: false, error: "Server error" });
+    catch (error) {
+        console.error("Error creating user:", error);
+        res.status(500).json({ error: "Internal server error" });
     }
 });
 export default router;
