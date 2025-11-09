@@ -13,6 +13,7 @@ import morgan from "morgan";
 import NodeCache from "node-cache";
 import https from "https";
 import mongoose from "mongoose";
+import cron from "node-cron";
 import { issueJwt, requireAuth, requireAdmin } from "./middleware/auth.js";
 import { Connection, clusterApiUrl } from "@solana/web3.js";
 
@@ -63,7 +64,6 @@ const allowedOrigins = [
   "https://fst-mini-app-git-feat-realms-free-and-contest-defi-lord.vercel.app",
   "https://fst-mini-app-git-feat-realms-free-and-contest-defilords-projects.vercel.app",
 ];
-
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -95,10 +95,7 @@ const userSchema = new mongoose.Schema(
 const contestSchema = new mongoose.Schema(
   {
     name: String,
-    type: {
-      type: String,
-      enum: ["FREE", "WEEKLY", "MONTHLY", "SEASONAL"],
-    },
+    type: { type: String, enum: ["FREE", "WEEKLY", "MONTHLY", "SEASONAL"] },
     entryFee: { type: Number, default: 0 },
     registrationOpen: Boolean,
     participants: [
@@ -125,9 +122,19 @@ const transactionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const fplCacheSchema = new mongoose.Schema(
+  {
+    key: { type: String, unique: true },
+    data: Object,
+    lastUpdated: Date,
+  },
+  { timestamps: true }
+);
+
 const User = mongoose.model("User", userSchema);
 const Contest = mongoose.model("Contest", contestSchema);
 const Transaction = mongoose.model("Transaction", transactionSchema);
+const FPLCache = mongoose.model("FPLCache", fplCacheSchema);
 
 /* -------------------------- Cache + HTTPS Agent --------------------------- */
 const cache = new NodeCache({ stdTTL: 300 }); // 5 min TTL
@@ -144,7 +151,6 @@ app.post("/auth/challenge", (req, res) => {
     walletNonces.set(address, challenge);
     res.json({ ok: true, challenge });
   } catch (err) {
-    console.error("❌ Challenge error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -170,65 +176,84 @@ app.post("/auth/verify", async (req, res) => {
     const token = issueJwt({ userId: address, role });
 
     await User.findOneAndUpdate({ wallet: address }, { token, role }, { upsert: true });
-
     res.json({ ok: true, token, role });
-  } catch (err) {
-    console.error("❌ Verify wallet error:", err);
+  } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
 
-/* ----------------------------- AUTH INTROSPECT ----------------------------- */
 app.post("/auth/introspect", requireAuth, async (req, res) => {
   try {
     const user = await User.findOne({ wallet: req.auth!.userId });
     if (!user) return res.status(404).json({ error: "User not found" });
     res.json({ ok: true, role: user.role, wallet: user.wallet });
-  } catch (err) {
-    console.error("❌ Introspect error:", err);
+  } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
 
-/* ---------------------------- FPL API PROXY (fixed) ---------------------------- */
+/* ---------------------------- FPL API PROXY (DB + CACHE) ---------------------------- */
 app.get("/fpl/api/*", async (req, res) => {
   try {
     const endpoint = req.params[0];
-    const url = `https://fantasy.premierleague.com/api/${endpoint}`;
-    const cacheKey = `fpl:${url}`;
-    const cached = cache.get(cacheKey);
+    const key = `fpl:${endpoint}`;
+
+    // Check cache first
+    const cached = cache.get(key);
     if (cached) return res.json(cached);
 
-    // Use a free relay proxy to bypass FPL geo-block
+    // Try DB fallback if FPL fails
+    const url = `https://fantasy.premierleague.com/api/${endpoint}`;
     const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
 
-    const response = await fetch(proxyUrl, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
-        "Accept": "application/json,text/plain,*/*",
-      },
-    });
-
+    const response = await fetch(proxyUrl, { agent: httpsAgent });
     if (!response.ok) {
       console.warn(`⚠️ FPL upstream returned ${response.status}`);
-      const fallback = cache.get(cacheKey);
-      if (fallback) {
-        console.log("⚡ Serving cached fallback FPL data");
-        return res.json(fallback);
-      }
+      const dbData = await FPLCache.findOne({ key });
+      if (dbData) return res.json(dbData.data);
       return res.status(502).json({ error: "FPL upstream blocked request" });
     }
 
     const data = await response.json();
-    cache.set(cacheKey, data);
+    cache.set(key, data);
+    await FPLCache.findOneAndUpdate(
+      { key },
+      { data, lastUpdated: new Date() },
+      { upsert: true }
+    );
+
     res.json(data);
   } catch (err) {
     console.error("❌ FPL proxy error:", err);
+    const dbData = await FPLCache.findOne({ key: req.params[0] });
+    if (dbData) return res.json(dbData.data);
     res.status(500).json({ error: "FPL proxy failed" });
   }
 });
 
+/* -------------------------- Hourly FPL Data Refresh -------------------------- */
+async function refreshFPLData() {
+  const endpoints = ["bootstrap-static/", "fixtures/"];
+  for (const ep of endpoints) {
+    const url = `https://fantasy.premierleague.com/api/${ep}`;
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    try {
+      const response = await fetch(proxyUrl, { agent: httpsAgent });
+      if (!response.ok) throw new Error(`FPL ${ep} failed: ${response.status}`);
+      const data = await response.json();
+      await FPLCache.findOneAndUpdate(
+        { key: `fpl:${ep}` },
+        { data, lastUpdated: new Date() },
+        { upsert: true }
+      );
+      console.log(`✅ FPL cache refreshed: ${ep}`);
+    } catch (err) {
+      console.warn(`⚠️ FPL refresh failed for ${ep}:`, err);
+    }
+  }
+}
+cron.schedule("0 * * * *", refreshFPLData); // every hour
+setTimeout(refreshFPLData, 5000); // initial refresh on boot
 
 /* -------------------------- VERIFY PAYMENT -------------------------- */
 const solana = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
@@ -236,101 +261,79 @@ const solana = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
 async function verifySolanaTx(signature: string, expectedWallet: string, minAmountLamports: number) {
   try {
     const tx = await solana.getTransaction(signature, { commitment: "confirmed" });
-    if (!tx) {
-      console.warn(`⚠️ Transaction not found: ${signature}`);
-      return false;
-    }
+    if (!tx) return false;
     const accountKeys = tx.transaction.message.accountKeys.map((k) => k.toBase58());
-    if (!accountKeys.includes(expectedWallet)) {
-      console.warn(`⚠️ Wallet ${expectedWallet} not in tx ${signature}`);
-      return false;
-    }
+    if (!accountKeys.includes(expectedWallet)) return false;
     const post = tx.meta?.postBalances ?? [];
     const pre = tx.meta?.preBalances ?? [];
     const diff = pre[0] - post[0];
     return diff >= minAmountLamports;
-  } catch (err) {
-    console.error("verifySolanaTx error:", err);
+  } catch {
     return false;
   }
 }
 
 /* ----------------------------- ADMIN ROUTES ----------------------------- */
 app.get("/admin/contests", requireAdmin, async (_req, res) => {
-  try {
-    const contests = await Contest.find().sort({ createdAt: -1 });
-    res.json({ ok: true, contests });
-  } catch (err) {
-    console.error("❌ Admin contest fetch error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
+  const contests = await Contest.find().sort({ createdAt: -1 });
+  res.json({ ok: true, contests });
 });
 
 /* -------------------------- JOIN CONTEST -------------------------- */
 app.post("/contests/:id/join", requireAuth, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { txSignature } = req.body;
-    const wallet = req.auth!.userId;
+  const { id } = req.params;
+  const { txSignature } = req.body;
+  const wallet = req.auth!.userId;
 
-    const contest = await Contest.findById(id);
-    if (!contest || !contest.registrationOpen)
-      return res.status(400).json({ error: "Contest not open" });
+  const contest = await Contest.findById(id);
+  if (!contest || !contest.registrationOpen)
+    return res.status(400).json({ error: "Contest not open" });
 
-    if (contest.entryFee === 0) {
-      const exists = contest.participants.find((p: any) => p.wallet === wallet);
-      if (!exists) {
-        contest.participants.push({
-          wallet,
-          paid: true,
-          entryFee: 0,
-          txSignature: null,
-          score: 0,
-          joinedAt: new Date(),
-        });
-        await contest.save();
-      }
-      return res.json({ ok: true, message: "Joined free contest" });
-    }
-
-    if (!txSignature)
-      return res.status(400).json({ error: "Missing transaction signature" });
-
-    const lamports = (contest.entryFee || 0) * 1e9;
-    const verified = await verifySolanaTx(txSignature, wallet, lamports);
-    if (!verified) return res.status(400).json({ error: "Transaction not verified" });
-
-    await Transaction.create({
-      wallet,
-      txSignature,
-      amount: contest.entryFee,
-      confirmed: true,
-    });
-
+  if (contest.entryFee === 0) {
     const exists = contest.participants.find((p: any) => p.wallet === wallet);
     if (!exists) {
       contest.participants.push({
         wallet,
         paid: true,
-        entryFee: contest.entryFee,
-        txSignature,
+        entryFee: 0,
+        txSignature: null,
         score: 0,
         joinedAt: new Date(),
       });
       await contest.save();
     }
-
-    res.json({ ok: true, message: "Successfully joined contest" });
-  } catch (err) {
-    console.error("❌ join contest error:", err);
-    res.status(500).json({ error: "Server error" });
+    return res.json({ ok: true, message: "Joined free contest" });
   }
+
+  if (!txSignature)
+    return res.status(400).json({ error: "Missing transaction signature" });
+
+  const lamports = (contest.entryFee || 0) * 1e9;
+  const verified = await verifySolanaTx(txSignature, wallet, lamports);
+  if (!verified) return res.status(400).json({ error: "Transaction not verified" });
+
+  await Transaction.create({ wallet, txSignature, amount: contest.entryFee, confirmed: true });
+
+  const exists = contest.participants.find((p: any) => p.wallet === wallet);
+  if (!exists) {
+    contest.participants.push({
+      wallet,
+      paid: true,
+      entryFee: contest.entryFee,
+      txSignature,
+      score: 0,
+      joinedAt: new Date(),
+    });
+    await contest.save();
+  }
+
+  res.json({ ok: true, message: "Successfully joined contest" });
 });
 
 /* ------------------------------- HEALTH ------------------------------- */
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 app.get("/", (_req, res) =>
-  res.send("✅ FST backend running with MongoDB + Wallet Auth + Solana payments!")
+  res.send("✅ FST backend running with MongoDB + hourly FPL cache + Solana payments!")
 );
 app.use((_req, res) => res.status(404).json({ error: "Route not found" }));
 
