@@ -61,6 +61,7 @@ const allowedOrigins = [
   "https://fst-mini-app-git-feat-realms-free-and-contest-defi-lord.vercel.app",
   "https://fst-mini-app-git-feat-realms-free-and-contest-defilords-projects.vercel.app",
 ];
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -185,9 +186,9 @@ app.post("/auth/introspect", requireAuth, async (req, res) => {
 });
 
 /* ---------------------------- FPL API PROXY ---------------------------- */
-app.get("/fpl/api/:endpoint*", async (req, res) => {
+app.get("/fpl/api/*", async (req, res) => {
   try {
-    const endpoint = req.params.endpoint + (req.params[0] || "");
+    const endpoint = req.params[0];
     const url = `https://fantasy.premierleague.com/api/${endpoint}`;
     const cached = cache.get(url);
     if (cached) return res.json(cached);
@@ -197,15 +198,15 @@ app.get("/fpl/api/:endpoint*", async (req, res) => {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-        "Accept": "application/json,text/plain,*/*",
+        Accept: "application/json,text/plain,*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://fantasy.premierleague.com/",
+        Referer: "https://fantasy.premierleague.com/",
       },
     });
 
     if (!response.ok) {
       console.warn(`⚠️ Upstream FPL API error: ${response.status}`);
-      return res.status(403).json({ error: "Upstream FPL API error" });
+      return res.status(response.status).json({ error: "Upstream FPL API error" });
     }
 
     const data = await response.json();
