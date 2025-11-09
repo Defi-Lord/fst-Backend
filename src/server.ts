@@ -36,7 +36,9 @@ async function connectWithRetry(uri: string, attempts = 0) {
     console.error("❌ MongoDB connection error:", err);
     if (attempts < 5) {
       const delay = 2000 * (attempts + 1);
-      console.log(`🔁 Retrying MongoDB connection in ${delay}ms (attempt ${attempts + 1})`);
+      console.log(
+        `🔁 Retrying MongoDB connection in ${delay}ms (attempt ${attempts + 1})`
+      );
       setTimeout(() => connectWithRetry(uri, attempts + 1), delay);
     } else {
       console.error("📛 MongoDB connection failed permanently.");
@@ -93,7 +95,10 @@ const userSchema = new mongoose.Schema(
 const contestSchema = new mongoose.Schema(
   {
     name: String,
-    type: { type: String, enum: ["FREE", "WEEKLY", "MONTHLY", "SEASONAL"] },
+    type: {
+      type: String,
+      enum: ["FREE", "WEEKLY", "MONTHLY", "SEASONAL"],
+    },
     entryFee: { type: Number, default: 0 },
     registrationOpen: Boolean,
     participants: [
@@ -125,7 +130,7 @@ const Contest = mongoose.model("Contest", contestSchema);
 const Transaction = mongoose.model("Transaction", transactionSchema);
 
 /* -------------------------- Cache + HTTPS Agent --------------------------- */
-const cache = new NodeCache({ stdTTL: 300 });
+const cache = new NodeCache({ stdTTL: 300 }); // 5 min TTL
 const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 
 /* ------------------------------- WALLET AUTH ------------------------------- */
@@ -204,8 +209,7 @@ app.get("/fpl/api/*", async (req, res) => {
     const response = await fetch(url, {
       agent: httpsAgent,
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
+        "User-Agent": randomUA,
         "Accept": "application/json,text/plain,*/*",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://fantasy.premierleague.com/",
@@ -214,10 +218,16 @@ app.get("/fpl/api/*", async (req, res) => {
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
       },
-    });    
+    });
 
     if (!response.ok) {
       console.warn(`⚠️ Upstream FPL API error: ${response.status}`);
+      // ✅ Fallback: serve last cached copy if exists
+      const fallback = cache.get(url);
+      if (fallback) {
+        console.log("⚡ Serving cached FPL data (fallback)");
+        return res.json(fallback);
+      }
       return res.status(502).json({
         error: "FPL upstream blocked request",
         status: response.status,
@@ -229,6 +239,12 @@ app.get("/fpl/api/*", async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error("❌ FPL proxy error:", err);
+    const cachedUrls = cache.keys();
+    if (cachedUrls.length > 0) {
+      console.log("⚡ Serving last known cached FPL data (network failover)");
+      const anyCached = cache.get(cachedUrls[0]);
+      return res.json(anyCached || { error: "Cached data unavailable" });
+    }
     res.status(500).json({ error: "FPL proxy failed" });
   }
 });
@@ -296,13 +312,19 @@ app.post("/contests/:id/join", requireAuth, async (req, res) => {
       return res.json({ ok: true, message: "Joined free contest" });
     }
 
-    if (!txSignature) return res.status(400).json({ error: "Missing transaction signature" });
+    if (!txSignature)
+      return res.status(400).json({ error: "Missing transaction signature" });
 
     const lamports = (contest.entryFee || 0) * 1e9;
     const verified = await verifySolanaTx(txSignature, wallet, lamports);
     if (!verified) return res.status(400).json({ error: "Transaction not verified" });
 
-    await Transaction.create({ wallet, txSignature, amount: contest.entryFee, confirmed: true });
+    await Transaction.create({
+      wallet,
+      txSignature,
+      amount: contest.entryFee,
+      confirmed: true,
+    });
 
     const exists = contest.participants.find((p: any) => p.wallet === wallet);
     if (!exists) {
