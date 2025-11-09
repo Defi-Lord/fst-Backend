@@ -61,7 +61,6 @@ const allowedOrigins = [
   "https://fst-mini-app-git-feat-realms-free-and-contest-defi-lord.vercel.app",
   "https://fst-mini-app-git-feat-realms-free-and-contest-defilords-projects.vercel.app",
 ];
-
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -173,6 +172,37 @@ app.post("/auth/verify", async (req, res) => {
   }
 });
 
+/* ----------------------------- AUTH INTROSPECT ----------------------------- */
+app.post("/auth/introspect", requireAuth, async (req, res) => {
+  try {
+    const user = await User.findOne({ wallet: req.auth!.userId });
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json({ ok: true, role: user.role, wallet: user.wallet });
+  } catch (err) {
+    console.error("❌ Introspect error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/* ---------------------------- FPL API PROXY ---------------------------- */
+app.get("/fpl/api/:endpoint*", async (req, res) => {
+  try {
+    const endpoint = req.params.endpoint + (req.params[0] || "");
+    const url = `https://fantasy.premierleague.com/api/${endpoint}`;
+    const cached = cache.get(url);
+    if (cached) return res.json(cached);
+
+    const response = await fetch(url, { agent: httpsAgent });
+    if (!response.ok) return res.status(response.status).json({ error: "Upstream FPL API error" });
+    const data = await response.json();
+    cache.set(url, data);
+    res.json(data);
+  } catch (err) {
+    console.error("❌ FPL proxy error:", err);
+    res.status(500).json({ error: "FPL proxy failed" });
+  }
+});
+
 /* -------------------------- VERIFY PAYMENT -------------------------- */
 const solana = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
 
@@ -183,13 +213,11 @@ async function verifySolanaTx(signature: string, expectedWallet: string, minAmou
       console.warn(`⚠️ Transaction not found: ${signature}`);
       return false;
     }
-
     const accountKeys = tx.transaction.message.accountKeys.map((k) => k.toBase58());
     if (!accountKeys.includes(expectedWallet)) {
       console.warn(`⚠️ Wallet ${expectedWallet} not in tx ${signature}`);
       return false;
     }
-
     const post = tx.meta?.postBalances ?? [];
     const pre = tx.meta?.preBalances ?? [];
     const diff = pre[0] - post[0];
@@ -199,6 +227,17 @@ async function verifySolanaTx(signature: string, expectedWallet: string, minAmou
     return false;
   }
 }
+
+/* ----------------------------- ADMIN ROUTES ----------------------------- */
+app.get("/admin/contests", requireAdmin, async (_req, res) => {
+  try {
+    const contests = await Contest.find().sort({ createdAt: -1 });
+    res.json({ ok: true, contests });
+  } catch (err) {
+    console.error("❌ Admin contest fetch error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 /* -------------------------- JOIN CONTEST -------------------------- */
 app.post("/contests/:id/join", requireAuth, async (req, res) => {
@@ -211,7 +250,6 @@ app.post("/contests/:id/join", requireAuth, async (req, res) => {
     if (!contest || !contest.registrationOpen)
       return res.status(400).json({ error: "Contest not open" });
 
-    // Free contests skip payment verification
     if (contest.entryFee === 0) {
       const exists = contest.participants.find((p: any) => p.wallet === wallet);
       if (!exists) {
@@ -257,12 +295,10 @@ app.post("/contests/:id/join", requireAuth, async (req, res) => {
 });
 
 /* ------------------------------- HEALTH ------------------------------- */
-app.get("/health", (req, res) => res.json({ status: "ok" }));
-
-app.get("/", (req, res) =>
+app.get("/health", (_req, res) => res.json({ status: "ok" }));
+app.get("/", (_req, res) =>
   res.send("✅ FST backend running with MongoDB + Wallet Auth + Solana payments!")
 );
-
-app.use((req, res) => res.status(404).json({ error: `Route not found: ${req.originalUrl}` }));
+app.use((_req, res) => res.status(404).json({ error: "Route not found" }));
 
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
