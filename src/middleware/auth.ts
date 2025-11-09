@@ -1,57 +1,35 @@
-// middleware/auth.ts
-import { Request, Response, NextFunction } from "express";
+// src/middleware/auth.ts
 import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+const JWT_SECRET = process.env.JWT_SECRET || "supersecret"; // replace in production
 
-export type AuthUser = {
-  userId: string;
-  role: "USER" | "ADMIN";
-};
-
-declare global {
-  namespace Express {
-    interface Request {
-      auth?: AuthUser;
-    }
-  }
+// Helper to issue JWT
+export function issueJwt(payload) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
 }
 
-/**
- * issueJwt - create a JWT for a user payload
- */
-export function issueJwt(payload: AuthUser) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
-}
-
-/**
- * requireAuth - express middleware to require a valid JWT in Authorization header
- */
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization || req.header("Authorization");
-  if (!authHeader || !authHeader.toString().startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  const token = authHeader.toString().slice(7);
+// Middleware: require authentication
+export function requireAuth(req, res, next) {
   try {
-    const data = jwt.verify(token, JWT_SECRET) as AuthUser;
-    req.auth = data;
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Missing or invalid Authorization header" });
+    }
+
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    req.auth = decoded;
     next();
   } catch (err) {
-    return res.status(401).json({ error: "Invalid token" });
+    console.error("❌ Auth verification error:", err.message);
+    return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
 
-/**
- * requireAdmin - require an authenticated admin
- */
-export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  // call requireAuth then verify role
-  requireAuth(req, res, () => {
-    if (req.auth?.role !== "ADMIN") {
-      return res.status(403).json({ error: "Admin only" });
-    }
-    next();
-  });
+// Middleware: require admin privileges
+export function requireAdmin(req, res, next) {
+  if (!req.auth) return res.status(401).json({ error: "Unauthorized" });
+  if (req.auth.role !== "ADMIN") return res.status(403).json({ error: "Forbidden: Admins only" });
+  next();
 }

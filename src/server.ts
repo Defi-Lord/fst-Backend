@@ -193,20 +193,30 @@ app.get("/fpl/api/*", async (req, res) => {
     const cached = cache.get(url);
     if (cached) return res.json(cached);
 
+    // Random realistic User-Agent (helps bypass 403 blocks)
+    const userAgents = [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17 Safari/605.1.15",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121 Safari/537.36",
+    ];
+    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+
     const response = await fetch(url, {
       agent: httpsAgent,
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-        Accept: "application/json,text/plain,*/*",
+        "User-Agent": randomUA,
+        "Accept": "application/json,text/plain,*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        Referer: "https://fantasy.premierleague.com/",
+        "Referer": "https://fantasy.premierleague.com/",
       },
     });
 
     if (!response.ok) {
       console.warn(`⚠️ Upstream FPL API error: ${response.status}`);
-      return res.status(response.status).json({ error: "Upstream FPL API error" });
+      return res.status(502).json({
+        error: "FPL upstream blocked request",
+        status: response.status,
+      });
     }
 
     const data = await response.json();
