@@ -170,9 +170,12 @@ app.post("/auth/verify", async (req, res) => {
     if (!isValid) return res.status(401).json({ error: "Invalid signature" });
 
     walletNonces.delete(address);
-    const role: Role = address === process.env.ADMIN_WALLET_ADDRESS ? "ADMIN" : "USER";
-    const token = issueJwt({ userId: address, role });
 
+    // ✅ Commit: Multi-admin support
+    const adminWallets = (process.env.ADMIN_WALLETS || "").split(",").map(w => w.trim().toLowerCase());
+    const role: Role = adminWallets.includes(address.toLowerCase()) ? "ADMIN" : "USER";
+
+    const token = issueJwt({ userId: address, role });
     await User.findOneAndUpdate({ wallet: address }, { token, role }, { upsert: true });
     res.json({ ok: true, token, role });
   } catch {
@@ -190,7 +193,7 @@ app.post("/auth/introspect", requireAuth, async (req, res) => {
   }
 });
 
-/* ---------------------------- FPL API PROXY (DB + CACHE) ---------------------------- */
+/* ---------------------------- FPL API PROXY ---------------------------- */
 app.get("/fpl/api/*", async (req, res) => {
   const endpoint = req.params[0];
   const key = `fpl:${endpoint}`;
@@ -221,48 +224,29 @@ app.get("/fpl/api/*", async (req, res) => {
   }
 });
 
-/* -------------------------- Hourly FPL Data Refresh -------------------------- */
-async function refreshFPLData() {
-  const endpoints = ["bootstrap-static/", "fixtures/"];
-  for (const ep of endpoints) {
-    const url = `https://fantasy.premierleague.com/api/${ep}`;
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    try {
-      const response = await fetch(proxyUrl, { agent: httpsAgent });
-      if (!response.ok) throw new Error(`FPL ${ep} failed: ${response.status}`);
-      const data = await response.json();
-      await FPLCache.findOneAndUpdate(
-        { key: `fpl:${ep}` },
-        { data, lastUpdated: new Date() },
-        { upsert: true }
-      );
-      console.log(`✅ FPL cache refreshed: ${ep}`);
-    } catch (err) {
-      console.warn(`⚠️ FPL refresh failed for ${ep}:`, err);
-    }
-  }
-}
-cron.schedule("0 * * * *", refreshFPLData); // every hour
-setTimeout(refreshFPLData, 5000); // initial refresh after boot
-
-/* ----------------------------- ADMIN FPL CACHE INSPECT ----------------------------- */
-app.get("/admin/fpl-cache", async (req, res) => {
-  const adminWallet = process.env.ADMIN_WALLET_ADDRESS;
-  const wallet = req.query.wallet as string;
-  if (wallet !== adminWallet) return res.status(403).json({ error: "Forbidden" });
+/* -------------------------- USER HISTORY (Commit) -------------------------- */
+app.get("/user/history", requireAuth, async (req, res) => {
   try {
-    const caches = await FPLCache.find().sort({ updatedAt: -1 });
-    res.json({
-      ok: true,
-      count: caches.length,
-      data: caches.map((c) => ({
-        key: c.key,
-        lastUpdated: c.lastUpdated,
-        size: JSON.stringify(c.data).length,
-      })),
+    const wallet = req.auth!.userId;
+    const contests = await Contest.find({
+      "participants.wallet": wallet,
+    }).select("name type entryFee participants");
+    const history = contests.map((c) => {
+      const p = c.participants.find((x: any) => x.wallet === wallet);
+      return {
+        contestId: c._id,
+        name: c.name,
+        type: c.type,
+        entryFee: c.entryFee,
+        score: p?.score || 0,
+        joinedAt: p?.joinedAt,
+        paid: p?.paid,
+        txSignature: p?.txSignature,
+      };
     });
+    res.json({ ok: true, history });
   } catch (err) {
-    console.error("❌ Cache inspect error:", err);
+    console.error("❌ User history error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -272,10 +256,19 @@ const solana = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
 
 async function verifySolanaTx(signature: string, expectedWallet: string, minAmountLamports: number) {
   try {
+    // ✅ Commit: Ensure transaction goes to treasury wallet
     const tx = await solana.getTransaction(signature, { commitment: "confirmed" });
     if (!tx) return false;
-    const accountKeys = tx.transaction.message.accountKeys.map((k) => k.toBase58());
-    if (!accountKeys.includes(expectedWallet)) return false;
+
+    const postToken = tx.transaction.message.accountKeys.map((k) => k.toBase58());
+    const toWallet = process.env.TREASURY_WALLET?.toLowerCase();
+    const expected = expectedWallet.toLowerCase();
+
+    if (!postToken.includes(toWallet)) {
+      console.warn(`❌ TX did not go to treasury wallet`);
+      return false;
+    }
+
     const post = tx.meta?.postBalances ?? [];
     const pre = tx.meta?.preBalances ?? [];
     const diff = pre[0] - post[0];
