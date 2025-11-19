@@ -1,7 +1,11 @@
 // src/middleware/auth.ts
 import jwt from "jsonwebtoken";
+import { prisma } from "../lib/prisma";
 
-const JWT_SECRET = process.env.JWT_SECRET || "supersecret"; // replace in production
+const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
+
+// Wallet address that is admin (your admin wallet)
+const ADMIN_WALLET = "8569mYKpddFZsAkQYRrNgNiDKoYYd87UbmmpwvjJiyt2";
 
 // Helper to issue JWT
 export function issueJwt(payload) {
@@ -9,9 +13,10 @@ export function issueJwt(payload) {
 }
 
 // Middleware: require authentication
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
+
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({ error: "Missing or invalid Authorization header" });
     }
@@ -19,7 +24,26 @@ export function requireAuth(req, res, next) {
     const token = authHeader.split(" ")[1];
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    req.auth = decoded;
+    // Load user wallet from database
+    const wallet = await prisma.wallet.findUnique({
+      where: { id: decoded.userId },
+      include: { user: true },
+    });
+
+    if (!wallet) {
+      return res.status(401).json({ error: "Invalid user" });
+    }
+
+    // Assign ADMIN role based on wallet address
+    const role = wallet.address === ADMIN_WALLET ? "ADMIN" : (wallet.user?.role || "USER");
+
+    req.auth = {
+      ...decoded,
+      wallet: wallet.address,
+      role,
+      userId: decoded.userId
+    };
+
     next();
   } catch (err) {
     console.error("❌ Auth verification error:", err.message);
@@ -27,9 +51,15 @@ export function requireAuth(req, res, next) {
   }
 }
 
-// Middleware: require admin privileges
+// Middleware: require ADMIN privileges
 export function requireAdmin(req, res, next) {
-  if (!req.auth) return res.status(401).json({ error: "Unauthorized" });
-  if (req.auth.role !== "ADMIN") return res.status(403).json({ error: "Forbidden: Admins only" });
+  if (!req.auth) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  if (req.auth.role !== "ADMIN") {
+    return res.status(403).json({ error: "Forbidden: Admins only" });
+  }
+
   next();
 }
