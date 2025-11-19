@@ -54,10 +54,6 @@ app.use(morgan("dev"));
 app.use(bodyParser.json({ limit: "2mb" }));
 
 /* --------------------------------- CORS ---------------------------------- */
-// ⛔ Your old CORS blocked Vercel because "origin" was undefined sometimes
-// ⛔ Also blocked OPTIONS (preflight) — causing 401 before request
-// ✅ FIXED VERSION BELOW
-
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
@@ -70,25 +66,19 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow non-browser requests (like server-side) with no origin
       if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      console.warn(`🚫 CORS BLOCKED: ${origin}`);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      console.warn(`🚫 CORS blocked request from: ${origin}`);
       return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+
+    // ✅ FIX: allow browser to send/read Authorization header
     exposedHeaders: ["Authorization"],
   })
 );
-
-// 🔥 FIX: allow browsers to preflight
-app.options("*", cors());
 
 /* ----------------------------- Mongoose Models ----------------------------- */
 type Role = "USER" | "ADMIN";
@@ -186,13 +176,8 @@ app.post("/auth/verify", async (req, res) => {
 
     walletNonces.delete(address);
 
-    const adminWallets = (process.env.ADMIN_WALLETS || "")
-      .split(",")
-      .map(w => w.trim().toLowerCase());
-
-    const role: Role = adminWallets.includes(address.toLowerCase())
-      ? "ADMIN"
-      : "USER";
+    const adminWallets = (process.env.ADMIN_WALLETS || "").split(",").map(w => w.trim().toLowerCase());
+    const role: Role = adminWallets.includes(address.toLowerCase()) ? "ADMIN" : "USER";
 
     const token = issueJwt({ userId: address, role });
     await User.findOneAndUpdate({ wallet: address }, { token, role }, { upsert: true });
