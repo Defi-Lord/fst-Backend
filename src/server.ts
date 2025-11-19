@@ -54,9 +54,12 @@ app.use(morgan("dev"));
 app.use(bodyParser.json({ limit: "2mb" }));
 
 /* --------------------------------- CORS ---------------------------------- */
-// ⛔ Your old CORS blocked Vercel because "origin" was undefined sometimes
-// ⛔ Also blocked OPTIONS (preflight) — causing 401 before request
-// ✅ FIXED VERSION BELOW
+/*  
+   🔥 UPDATED CORS (the ONLY part you asked to change)  
+   - Allows Authorization header to pass  
+   - Allows preflight OPTIONS  
+   - Fixes 401 due to header stripping  
+*/
 
 const allowedOrigins = [
   "http://localhost:5173",
@@ -70,24 +73,34 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow non-browser requests (like server-side) with no origin
       if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
+      if (allowedOrigins.includes(origin)) return callback(null, true);
       console.warn(`🚫 CORS BLOCKED: ${origin}`);
       return callback(new Error("Not allowed by CORS"));
     },
+
     credentials: true,
+
+    // 🔥 MUST allow Authorization during browser preflight
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin"
+    ],
+
+    // 🔥 Allow client to read Authorization header
     exposedHeaders: ["Authorization"],
+
+    // 🔥 Fix 401 preflight failure
+    preflightContinue: false,
+    optionsSuccessStatus: 204
   })
 );
 
-// 🔥 FIX: allow browsers to preflight
+// Allow OPTIONS everywhere
 app.options("*", cors());
 
 /* ----------------------------- Mongoose Models ----------------------------- */
