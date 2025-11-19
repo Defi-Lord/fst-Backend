@@ -62,6 +62,7 @@ const allowedOrigins = [
   "https://fst-mini-app-git-feat-realms-free-and-contest-defi-lord.vercel.app",
   "https://fst-mini-app-git-feat-realms-free-and-contest-defilords-projects.vercel.app",
 ];
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -73,6 +74,9 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+
+    // ✅ FIX: allow browser to send/read Authorization header
+    exposedHeaders: ["Authorization"],
   })
 );
 
@@ -135,7 +139,7 @@ const Transaction = mongoose.model("Transaction", transactionSchema);
 const FPLCache = mongoose.model("FPLCache", fplCacheSchema);
 
 /* -------------------------- Cache + HTTPS Agent --------------------------- */
-const cache = new NodeCache({ stdTTL: 300 }); // 5 min TTL
+const cache = new NodeCache({ stdTTL: 300 });
 const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 
 /* ------------------------------- WALLET AUTH ------------------------------- */
@@ -166,17 +170,18 @@ app.post("/auth/verify", async (req, res) => {
     const publicKeyBytes = bs58.decode(address);
     const signatureBytes = Uint8Array.from(Buffer.from(signature, "base64"));
     const messageBytes = new TextEncoder().encode(message);
+
     const isValid = nacl.sign.detached.verify(messageBytes, signatureBytes, publicKeyBytes);
     if (!isValid) return res.status(401).json({ error: "Invalid signature" });
 
     walletNonces.delete(address);
 
-    // ✅ Commit: Multi-admin support
     const adminWallets = (process.env.ADMIN_WALLETS || "").split(",").map(w => w.trim().toLowerCase());
     const role: Role = adminWallets.includes(address.toLowerCase()) ? "ADMIN" : "USER";
 
     const token = issueJwt({ userId: address, role });
     await User.findOneAndUpdate({ wallet: address }, { token, role }, { upsert: true });
+
     res.json({ ok: true, token, role });
   } catch {
     res.status(500).json({ error: "Server error" });
@@ -187,6 +192,7 @@ app.post("/auth/introspect", requireAuth, async (req, res) => {
   try {
     const user = await User.findOne({ wallet: req.auth!.userId });
     if (!user) return res.status(404).json({ error: "User not found" });
+
     res.json({ ok: true, role: user.role, wallet: user.wallet });
   } catch {
     res.status(500).json({ error: "Server error" });
@@ -214,7 +220,13 @@ app.get("/fpl/api/*", async (req, res) => {
 
     const data = await response.json();
     cache.set(key, data);
-    await FPLCache.findOneAndUpdate({ key }, { data, lastUpdated: new Date() }, { upsert: true });
+
+    await FPLCache.findOneAndUpdate(
+      { key },
+      { data, lastUpdated: new Date() },
+      { upsert: true }
+    );
+
     res.json(data);
   } catch (err) {
     console.error("❌ FPL proxy error:", err);
@@ -224,13 +236,15 @@ app.get("/fpl/api/*", async (req, res) => {
   }
 });
 
-/* -------------------------- USER HISTORY (Commit) -------------------------- */
+/* -------------------------- USER HISTORY -------------------------- */
 app.get("/user/history", requireAuth, async (req, res) => {
   try {
     const wallet = req.auth!.userId;
+
     const contests = await Contest.find({
       "participants.wallet": wallet,
     }).select("name type entryFee participants");
+
     const history = contests.map((c) => {
       const p = c.participants.find((x: any) => x.wallet === wallet);
       return {
@@ -244,6 +258,7 @@ app.get("/user/history", requireAuth, async (req, res) => {
         txSignature: p?.txSignature,
       };
     });
+
     res.json({ ok: true, history });
   } catch (err) {
     console.error("❌ User history error:", err);
@@ -256,7 +271,6 @@ const solana = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
 
 async function verifySolanaTx(signature: string, expectedWallet: string, minAmountLamports: number) {
   try {
-    // ✅ Commit: Ensure transaction goes to treasury wallet
     const tx = await solana.getTransaction(signature, { commitment: "confirmed" });
     if (!tx) return false;
 
@@ -272,13 +286,14 @@ async function verifySolanaTx(signature: string, expectedWallet: string, minAmou
     const post = tx.meta?.postBalances ?? [];
     const pre = tx.meta?.preBalances ?? [];
     const diff = pre[0] - post[0];
+
     return diff >= minAmountLamports;
   } catch {
     return false;
   }
 }
 
-/* ----------------------------- ADMIN ROUTES ----------------------------- */
+/* ------------------------------- ADMIN ROUTES ----------------------------- */
 app.get("/admin/contests", requireAdmin, async (_req, res) => {
   const contests = await Contest.find().sort({ createdAt: -1 });
   res.json({ ok: true, contests });
@@ -314,11 +329,18 @@ app.post("/contests/:id/join", requireAuth, async (req, res) => {
 
   const lamports = (contest.entryFee || 0) * 1e9;
   const verified = await verifySolanaTx(txSignature, wallet, lamports);
+
   if (!verified) return res.status(400).json({ error: "Transaction not verified" });
 
-  await Transaction.create({ wallet, txSignature, amount: contest.entryFee, confirmed: true });
+  await Transaction.create({
+    wallet,
+    txSignature,
+    amount: contest.entryFee,
+    confirmed: true,
+  });
 
   const exists = contest.participants.find((p: any) => p.wallet === wallet);
+
   if (!exists) {
     contest.participants.push({
       wallet,
@@ -336,9 +358,11 @@ app.post("/contests/:id/join", requireAuth, async (req, res) => {
 
 /* ------------------------------- HEALTH ------------------------------- */
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
+
 app.get("/", (_req, res) =>
   res.send("✅ FST backend running with MongoDB + hourly FPL cache + Solana payments!")
 );
+
 app.use((_req, res) => res.status(404).json({ error: "Route not found" }));
 
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
