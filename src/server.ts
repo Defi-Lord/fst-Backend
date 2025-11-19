@@ -15,7 +15,7 @@ import https from "https";
 import mongoose from "mongoose";
 import cron from "node-cron";
 import { issueJwt, requireAuth, requireAdmin } from "./middleware/auth.js";
-import { Connection, clusterApiUrl } from "@solana/web3.js";
+import { Connection, clusterApiUrl, PublicKey } from "@solana/web3.js";
 
 dotenv.config();
 
@@ -54,13 +54,6 @@ app.use(morgan("dev"));
 app.use(bodyParser.json({ limit: "2mb" }));
 
 /* --------------------------------- CORS ---------------------------------- */
-/*  
-   🔥 UPDATED CORS (the ONLY part you asked to change)  
-   - Allows Authorization header to pass  
-   - Allows preflight OPTIONS  
-   - Fixes 401 due to header stripping  
-*/
-
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
@@ -78,29 +71,15 @@ app.use(
       console.warn(`🚫 CORS BLOCKED: ${origin}`);
       return callback(new Error("Not allowed by CORS"));
     },
-
     credentials: true,
-
-    // 🔥 MUST allow Authorization during browser preflight
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "X-Requested-With",
-      "Accept",
-      "Origin"
-    ],
-
-    // 🔥 Allow client to read Authorization header
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
     exposedHeaders: ["Authorization"],
-
-    // 🔥 Fix 401 preflight failure
     preflightContinue: false,
     optionsSuccessStatus: 204
   })
 );
 
-// Allow OPTIONS everywhere
 app.options("*", cors());
 
 /* ----------------------------- Mongoose Models ----------------------------- */
@@ -190,11 +169,12 @@ app.post("/auth/verify", async (req, res) => {
     if (!expected || expected !== message)
       return res.status(400).json({ error: "No challenge found" });
 
-    const publicKeyBytes = bs58.decode(address);
+    // Decode public key correctly
+    const publicKey = new PublicKey(address);
     const signatureBytes = Uint8Array.from(Buffer.from(signature, "base64"));
     const messageBytes = new TextEncoder().encode(message);
 
-    const isValid = nacl.sign.detached.verify(messageBytes, signatureBytes, publicKeyBytes);
+    const isValid = nacl.sign.detached.verify(messageBytes, signatureBytes, publicKey.toBytes());
     if (!isValid) return res.status(401).json({ error: "Invalid signature" });
 
     walletNonces.delete(address);
@@ -211,7 +191,8 @@ app.post("/auth/verify", async (req, res) => {
     await User.findOneAndUpdate({ wallet: address }, { token, role }, { upsert: true });
 
     res.json({ ok: true, token, role });
-  } catch {
+  } catch (err) {
+    console.error("❌ /auth/verify error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
