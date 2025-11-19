@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma";
 
 const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
 
-// Wallet address that is admin (your admin wallet)
+// Wallet address that is admin
 const ADMIN_WALLET = "8569mYKpddFZsAkQYRrNgNiDKoYYd87UbmmpwvjJiyt2";
 
 // Helper to issue JWT
@@ -24,18 +24,17 @@ export async function requireAuth(req, res, next) {
     const token = authHeader.split(" ")[1];
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    // Load user wallet from database
+    // Load wallet ONLY (no user include because your schema does not support it)
     const wallet = await prisma.wallet.findUnique({
-      where: { id: decoded.userId },
-      include: { user: true },
+      where: { id: decoded.userId }
     });
 
     if (!wallet) {
       return res.status(401).json({ error: "Invalid user" });
     }
 
-    // Assign ADMIN role based on wallet address
-    const role = wallet.address === ADMIN_WALLET ? "ADMIN" : (wallet.user?.role || "USER");
+    // Determine admin role based on wallet address
+    const role = wallet.address === ADMIN_WALLET ? "ADMIN" : "USER";
 
     req.auth = {
       ...decoded,
