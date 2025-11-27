@@ -4,8 +4,11 @@ import { prisma } from "../lib/prisma";
 
 const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
 
-// Solana Admin Wallet Address
-const ADMIN_WALLET = "8569mYKpddFZsAkQYRrNgNiDKoYYd87UbmmpwvjJiyt2";
+// 🔥 MULTIPLE ADMIN WALLETS
+const ADMIN_WALLETS = [
+  "8569mYKpddFZsAkQYRrNgNiDKoYYd87UbmmpwvjJiyt2",
+  "DVBiPM5bRjZQiX744miAy4QNkMmV9GPUW2SUjriABhRU"
+];
 
 /**
  * Issue JWT token
@@ -28,17 +31,19 @@ export async function requireAuth(req: any, res: any, next: any) {
     const token = authHeader.split(" ")[1];
     const decoded: any = jwt.verify(token, JWT_SECRET);
 
-    // Lookup wallet by its address
+    // Lookup wallet by address from token
     const wallet = await prisma.wallet.findUnique({
       where: { address: decoded.wallet },
+      include: { users: true },
     });
 
     if (!wallet) {
       return res.status(401).json({ error: "Invalid user: wallet not found" });
     }
 
-    // Assign role: ADMIN if matches admin wallet, else USER
-    const role = wallet.address === ADMIN_WALLET ? "ADMIN" : "USER";
+    // Determine role: ADMIN if wallet is in list, otherwise USER
+    const isAdmin = ADMIN_WALLETS.includes(wallet.address);
+    const role = isAdmin ? "ADMIN" : "USER";
 
     req.auth = {
       wallet: wallet.address,

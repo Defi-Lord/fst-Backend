@@ -37,7 +37,9 @@ async function connectWithRetry(uri: string, attempts = 0) {
     console.error("❌ MongoDB connection error:", err);
     if (attempts < 5) {
       const delay = 2000 * (attempts + 1);
-      console.log(`🔁 Retrying MongoDB connection in ${delay}ms (attempt ${attempts + 1})`);
+      console.log(
+        `🔁 Retrying MongoDB connection in ${delay}ms (attempt ${attempts + 1})`
+      );
       setTimeout(() => connectWithRetry(uri, attempts + 1), delay);
     } else {
       console.error("📛 MongoDB connection failed permanently.");
@@ -54,10 +56,6 @@ app.use(morgan("dev"));
 app.use(bodyParser.json({ limit: "2mb" }));
 
 /* --------------------------------- CORS ---------------------------------- */
-// ⛔ Your old CORS blocked Vercel because "origin" was undefined sometimes
-// ⛔ Also blocked OPTIONS (preflight) — causing 401 before request
-// ✅ FIXED VERSION BELOW
-
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
@@ -70,12 +68,8 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow non-browser requests (like server-side) with no origin
       if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+      if (allowedOrigins.includes(origin)) return callback(null, true);
 
       console.warn(`🚫 CORS BLOCKED: ${origin}`);
       return callback(new Error("Not allowed by CORS"));
@@ -87,7 +81,6 @@ app.use(
   })
 );
 
-// 🔥 FIX: allow browsers to preflight
 app.options("*", cors());
 
 /* ----------------------------- Mongoose Models ----------------------------- */
@@ -108,7 +101,7 @@ const contestSchema = new mongoose.Schema(
   {
     name: String,
     type: { type: String, enum: ["FREE", "WEEKLY", "MONTHLY", "SEASONAL"] },
-    entryFee: { type: Number, default: 0 },
+    entryFee: Number,
     registrationOpen: Boolean,
     participants: [
       {
@@ -150,59 +143,97 @@ const FPLCache = mongoose.model("FPLCache", fplCacheSchema);
 
 /* -------------------------- Cache + HTTPS Agent --------------------------- */
 const cache = new NodeCache({ stdTTL: 300 });
-const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  rejectUnauthorized: false,
+});
 
 /* ------------------------------- WALLET AUTH ------------------------------- */
 const walletNonces = new Map<string, string>();
 
+/* ------------------------------- AUTH ROUTES ------------------------------- */
+
+// A) Challenge
 app.post("/auth/challenge", (req, res) => {
   try {
     const { address } = req.body;
-    if (!address) return res.status(400).json({ error: "Missing wallet address" });
+    if (!address)
+      return res.status(400).json({ error: "Missing wallet address" });
+
     const challenge = `Sign this message to verify your wallet: ${randomUUID()}`;
     walletNonces.set(address, challenge);
+
     res.json({ ok: true, challenge });
   } catch {
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// B) Nonce
+app.post("/auth/nonce", (req, res) => {
+  try {
+    const { walletAddress } = req.body;
+    if (!walletAddress)
+      return res.status(400).json({ error: "Missing wallet address" });
+
+    const nonce = `Sign to authenticate: ${randomUUID()}`;
+    walletNonces.set(walletAddress, nonce);
+
+    res.json({ ok: true, nonce, message: nonce });
+  } catch {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// C) VERIFY SIGNATURE (UPDATED FOR ADMIN FROM .env)
 app.post("/auth/verify", async (req, res) => {
   try {
-    const { address, signature, message } = req.body;
+    const address = req.body.address || req.body.walletAddress;
+    const signature = req.body.signature;
+    const message = req.body.message || req.body.nonce;
+
     if (!address || !signature || !message)
       return res.status(400).json({ error: "Missing required fields" });
 
     const expected = walletNonces.get(address);
     if (!expected || expected !== message)
-      return res.status(400).json({ error: "No challenge found" });
+      return res.status(400).json({ error: "Invalid or expired challenge" });
 
-    const publicKeyBytes = bs58.decode(address);
-    const signatureBytes = Uint8Array.from(Buffer.from(signature, "base64"));
-    const messageBytes = new TextEncoder().encode(message);
+    // Verify Solana signature
+    const pubKey = bs58.decode(address);
+    const sigBytes = Uint8Array.from(Buffer.from(signature, "base64"));
+    const msgBytes = new TextEncoder().encode(message);
 
-    const isValid = nacl.sign.detached.verify(messageBytes, signatureBytes, publicKeyBytes);
-    if (!isValid) return res.status(401).json({ error: "Invalid signature" });
+    const valid = nacl.sign.detached.verify(msgBytes, sigBytes, pubKey);
+    if (!valid) return res.status(401).json({ error: "Invalid signature" });
 
     walletNonces.delete(address);
 
+    // ADMIN FROM .env ONLY
     const adminWallets = (process.env.ADMIN_WALLETS || "")
       .split(",")
-      .map(w => w.trim().toLowerCase());
+      .map((w) => w.trim().toLowerCase());
 
     const role: Role = adminWallets.includes(address.toLowerCase())
       ? "ADMIN"
       : "USER";
 
     const token = issueJwt({ userId: address, role });
-    await User.findOneAndUpdate({ wallet: address }, { token, role }, { upsert: true });
+
+    await User.findOneAndUpdate(
+      { wallet: address },
+      { token, role },
+      { upsert: true }
+    );
 
     res.json({ ok: true, token, role });
-  } catch {
+  } catch (e) {
+    console.error("verify error:", e);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+// D) Introspect
 app.post("/auth/introspect", requireAuth, async (req, res) => {
   try {
     const user = await User.findOne({ wallet: req.auth!.userId });
@@ -223,7 +254,9 @@ app.get("/fpl/api/*", async (req, res) => {
     if (cached) return res.json(cached);
 
     const url = `https://fantasy.premierleague.com/api/${endpoint}`;
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(
+      url
+    )}`;
 
     const response = await fetch(proxyUrl, { agent: httpsAgent });
     if (!response.ok) {
@@ -284,12 +317,20 @@ app.get("/user/history", requireAuth, async (req, res) => {
 /* -------------------------- VERIFY PAYMENT -------------------------- */
 const solana = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
 
-async function verifySolanaTx(signature: string, expectedWallet: string, minAmountLamports: number) {
+async function verifySolanaTx(
+  signature: string,
+  expectedWallet: string,
+  minAmountLamports: number
+) {
   try {
-    const tx = await solana.getTransaction(signature, { commitment: "confirmed" });
+    const tx = await solana.getTransaction(signature, {
+      commitment: "confirmed",
+    });
     if (!tx) return false;
 
-    const postToken = tx.transaction.message.accountKeys.map((k) => k.toBase58());
+    const postToken = tx.transaction.message.accountKeys.map((k) =>
+      k.toBase58()
+    );
     const toWallet = process.env.TREASURY_WALLET?.toLowerCase();
     const expected = expectedWallet.toLowerCase();
 
@@ -324,6 +365,7 @@ app.post("/contests/:id/join", requireAuth, async (req, res) => {
   if (!contest || !contest.registrationOpen)
     return res.status(400).json({ error: "Contest not open" });
 
+  // Free contest
   if (contest.entryFee === 0) {
     const exists = contest.participants.find((p: any) => p.wallet === wallet);
     if (!exists) {
@@ -340,12 +382,15 @@ app.post("/contests/:id/join", requireAuth, async (req, res) => {
     return res.json({ ok: true, message: "Joined free contest" });
   }
 
-  if (!txSignature) return res.status(400).json({ error: "Missing transaction signature" });
+  // Paid contest
+  if (!txSignature)
+    return res.status(400).json({ error: "Missing transaction signature" });
 
   const lamports = (contest.entryFee || 0) * 1e9;
   const verified = await verifySolanaTx(txSignature, wallet, lamports);
 
-  if (!verified) return res.status(400).json({ error: "Transaction not verified" });
+  if (!verified)
+    return res.status(400).json({ error: "Transaction not verified" });
 
   await Transaction.create({
     wallet,
@@ -375,7 +420,9 @@ app.post("/contests/:id/join", requireAuth, async (req, res) => {
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
 app.get("/", (_req, res) =>
-  res.send("✅ FST backend running with MongoDB + hourly FPL cache + Solana payments!")
+  res.send(
+    "✅ FST backend running with MongoDB + hourly FPL cache + Solana payments!"
+  )
 );
 
 app.use((_req, res) => res.status(404).json({ error: "Route not found" }));
