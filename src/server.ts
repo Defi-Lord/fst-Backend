@@ -13,7 +13,6 @@ import morgan from "morgan";
 import NodeCache from "node-cache";
 import https from "https";
 import mongoose from "mongoose";
-import cron from "node-cron";
 import { issueJwt, requireAuth, requireAdmin } from "./middleware/auth.js";
 import { Connection, clusterApiUrl } from "@solana/web3.js";
 
@@ -99,10 +98,12 @@ const userSchema = new mongoose.Schema(
 
 const contestSchema = new mongoose.Schema(
   {
-    name: String,
-    type: { type: String, enum: ["FREE", "WEEKLY", "MONTHLY", "SEASONAL"] },
-    entryFee: Number,
-    registrationOpen: Boolean,
+    name: { type: String, default: "" },
+    title: { type: String, default: "" }, // Added title for frontend
+    type: { type: String, enum: ["FREE", "WEEKLY", "MONTHLY", "SEASONAL"], default: "FREE" },
+    entryFee: { type: Number, default: 0 },
+    registrationOpen: { type: Boolean, default: true },
+    active: { type: Boolean, default: true }, // Added active flag
     participants: [
       {
         wallet: String,
@@ -153,12 +154,11 @@ const walletNonces = new Map<string, string>();
 
 /* ------------------------------- AUTH ROUTES ------------------------------- */
 
-// A) Challenge
+// Challenge
 app.post("/auth/challenge", (req, res) => {
   try {
     const { address } = req.body;
-    if (!address)
-      return res.status(400).json({ error: "Missing wallet address" });
+    if (!address) return res.status(400).json({ error: "Missing wallet address" });
 
     const challenge = `Sign this message to verify your wallet: ${randomUUID()}`;
     walletNonces.set(address, challenge);
@@ -169,12 +169,11 @@ app.post("/auth/challenge", (req, res) => {
   }
 });
 
-// B) Nonce
+// Nonce
 app.post("/auth/nonce", (req, res) => {
   try {
     const { walletAddress } = req.body;
-    if (!walletAddress)
-      return res.status(400).json({ error: "Missing wallet address" });
+    if (!walletAddress) return res.status(400).json({ error: "Missing wallet address" });
 
     const nonce = `Sign to authenticate: ${randomUUID()}`;
     walletNonces.set(walletAddress, nonce);
@@ -185,7 +184,7 @@ app.post("/auth/nonce", (req, res) => {
   }
 });
 
-// C) VERIFY SIGNATURE (UPDATED FOR ADMIN FROM .env)
+// VERIFY SIGNATURE
 app.post("/auth/verify", async (req, res) => {
   try {
     const address = req.body.address || req.body.walletAddress;
@@ -199,7 +198,6 @@ app.post("/auth/verify", async (req, res) => {
     if (!expected || expected !== message)
       return res.status(400).json({ error: "Invalid or expired challenge" });
 
-    // Verify Solana signature
     const pubKey = bs58.decode(address);
     const sigBytes = Uint8Array.from(Buffer.from(signature, "base64"));
     const msgBytes = new TextEncoder().encode(message);
@@ -209,14 +207,12 @@ app.post("/auth/verify", async (req, res) => {
 
     walletNonces.delete(address);
 
-    // ADMIN FROM .env ONLY
+    // ADMIN FROM .env
     const adminWallets = (process.env.ADMIN_WALLETS || "")
       .split(",")
       .map((w) => w.trim().toLowerCase());
 
-    const role: Role = adminWallets.includes(address.toLowerCase())
-      ? "ADMIN"
-      : "USER";
+    const role: Role = adminWallets.includes(address.toLowerCase()) ? "ADMIN" : "USER";
 
     const token = issueJwt({ userId: address, role });
 
@@ -233,7 +229,7 @@ app.post("/auth/verify", async (req, res) => {
   }
 });
 
-// D) Introspect
+// Introspect
 app.post("/auth/introspect", requireAuth, async (req, res) => {
   try {
     const user = await User.findOne({ wallet: req.auth!.userId });
@@ -254,9 +250,7 @@ app.get("/fpl/api/*", async (req, res) => {
     if (cached) return res.json(cached);
 
     const url = `https://fantasy.premierleague.com/api/${endpoint}`;
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(
-      url
-    )}`;
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
 
     const response = await fetch(proxyUrl, { agent: httpsAgent });
     if (!response.ok) {
@@ -291,15 +285,18 @@ app.get("/user/history", requireAuth, async (req, res) => {
 
     const contests = await Contest.find({
       "participants.wallet": wallet,
-    }).select("name type entryFee participants");
+    }).select("name title type entryFee participants active createdAt");
 
     const history = contests.map((c) => {
       const p = c.participants.find((x: any) => x.wallet === wallet);
       return {
         contestId: c._id,
         name: c.name,
+        title: c.title,
         type: c.type,
         entryFee: c.entryFee,
+        active: c.active,
+        createdAt: c.createdAt,
         score: p?.score || 0,
         joinedAt: p?.joinedAt,
         paid: p?.paid,
@@ -314,7 +311,7 @@ app.get("/user/history", requireAuth, async (req, res) => {
   }
 });
 
-/* -------------------------- VERIFY PAYMENT -------------------------- */
+/* -------------------------- SOLANA TX VERIFY -------------------------- */
 const solana = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
 
 async function verifySolanaTx(
@@ -351,8 +348,15 @@ async function verifySolanaTx(
 
 /* ------------------------------- ADMIN ROUTES ----------------------------- */
 app.get("/admin/contests", requireAdmin, async (_req, res) => {
-  const contests = await Contest.find().sort({ createdAt: -1 });
+  const contests = await Contest.find().sort({ createdAt: -1 }).select(
+    "name title type entryFee active registrationOpen createdAt updatedAt participants"
+  );
   res.json({ ok: true, contests });
+});
+
+app.get("/admin/users", requireAdmin, async (_req, res) => {
+  const users = await User.find().select("wallet displayName role createdAt updatedAt team");
+  res.json({ ok: true, users });
 });
 
 /* -------------------------- JOIN CONTEST -------------------------- */
