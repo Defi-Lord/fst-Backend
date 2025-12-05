@@ -1,17 +1,16 @@
-// src/middleware/auth.ts
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma";
 
-const JWT_SECRET = process.env.JWT_SECRET || "supersecret";
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me"; // keep same default as auth route
 
-// 🔥 MULTIPLE ADMIN WALLETS
+// 🔥 MULTIPLE ADMIN WALLETS (same list as auth route)
 const ADMIN_WALLETS = [
   "8569mYKpddFZsAkQYRrNgNiDKoYYd87UbmmpwvjJiyt2",
-  "DVBiPM5bRjZQiX744miAy4QNkMmV9GPUW2SUjriABhRU"
+  "DVBiPM5bRjZQiX744miAy4QNkMmV9GPUW2SUjriABhRU",
 ];
 
 /**
- * Issue JWT token
+ * Issue JWT token (helper for server-side issuance if needed)
  */
 export function issueJwt(payload: any) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
@@ -19,6 +18,8 @@ export function issueJwt(payload: any) {
 
 /**
  * Require Authentication Middleware
+ * - Expects Authorization: Bearer <token>
+ * - Verifies token, looks up wallet, attaches req.auth = { wallet, role }
  */
 export async function requireAuth(req: any, res: any, next: any) {
   try {
@@ -29,20 +30,25 @@ export async function requireAuth(req: any, res: any, next: any) {
     }
 
     const token = authHeader.split(" ")[1];
-    const decoded: any = jwt.verify(token, JWT_SECRET);
+    let decoded: any;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET) as any;
+    } catch (err: any) {
+      return res.status(401).json({ error: "Invalid or expired token" });
+    }
 
     // Lookup wallet by address from token
     const wallet = await prisma.wallet.findUnique({
       where: { address: decoded.wallet },
-      include: { users: true },
     });
 
     if (!wallet) {
       return res.status(401).json({ error: "Invalid user: wallet not found" });
     }
 
-    // Determine role: ADMIN if wallet is in list, otherwise USER
-    const isAdmin = ADMIN_WALLETS.includes(wallet.address);
+    // Determine role: prefer role from token, fall back to ADMIN_WALLETS check
+    const roleFromToken = decoded.role;
+    const isAdmin = roleFromToken === "ADMIN" || ADMIN_WALLETS.includes(wallet.address);
     const role = isAdmin ? "ADMIN" : "USER";
 
     req.auth = {
@@ -51,9 +57,8 @@ export async function requireAuth(req: any, res: any, next: any) {
     };
 
     next();
-
   } catch (err: any) {
-    console.error("❌ Auth verification error:", err.message);
+    console.error("❌ Auth verification error:", err?.message || err);
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
