@@ -59,6 +59,16 @@ router.post("/verify", async (req, res) => {
     if (!stored || !stored.nonce)
       return res.status(400).json({ success: false, error: "nonce_missing" });
 
+    // Check TTL
+    if (stored.createdAt) {
+      const ageSec = (Date.now() - new Date(stored.createdAt).getTime()) / 1000;
+      if (ageSec > NONCE_TTL_SEC) {
+        // delete stale nonces to force fresh flow next time
+        await prisma.nonce.deleteMany({ where: { address: walletAddress } });
+        return res.status(400).json({ success: false, error: "nonce_expired" });
+      }
+    }
+
     const message = `FST login
 
 Wallet: ${walletAddress}
@@ -75,10 +85,19 @@ By signing this message you prove ownership of the wallet.`;
       sigBytes = Uint8Array.from(Buffer.from(signature, "base64"));
     } catch {
       // fallback to base58
-      sigBytes = bs58.decode(signature);
+      try {
+        sigBytes = bs58.decode(signature);
+      } catch (e) {
+        return res.status(400).json({ success: false, error: "invalid_signature_encoding" });
+      }
     }
 
-    const pubkeyBytes = bs58.decode(walletAddress);
+    let pubkeyBytes: Uint8Array;
+    try {
+      pubkeyBytes = bs58.decode(walletAddress);
+    } catch (e) {
+      return res.status(400).json({ success: false, error: "invalid_wallet_address" });
+    }
 
     const valid = nacl.sign.detached.verify(msgBytes, sigBytes, pubkeyBytes);
     if (!valid)
@@ -112,8 +131,8 @@ By signing this message you prove ownership of the wallet.`;
     // ------------------------------------------------------------
     const token = jwt.sign(
       {
-        wallet: wallet.address,
-        role,
+        wallet: wallet.address, // used by requireAuth middleware
+        role,                   // used by requireAdmin
       },
       JWT_SECRET,
       { expiresIn: "30d" }
@@ -122,10 +141,12 @@ By signing this message you prove ownership of the wallet.`;
     // remove nonce so it can't be reused
     await prisma.nonce.deleteMany({ where: { address: walletAddress } });
 
+    // return wallet id and address so frontend can store/use either
     return res.json({
       success: true,
       token,
       wallet: wallet.address,
+      walletId: wallet.id,
       role,
     });
   } catch (err) {
@@ -159,8 +180,8 @@ router.post("/introspect", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Wallet not found" });
     }
 
-    // respond with role/wallet
-    return res.json({ ok: true, role: decoded.role || "USER", wallet: decoded.wallet });
+    // respond with role/wallet (match the shape your frontend expects)
+    return res.json({ ok: true, role: decoded.role || "USER", wallet: decoded.wallet, walletId: walletRec.id });
   } catch (err) {
     console.error("❌ /auth/introspect error:", err);
     return res.status(500).json({ ok: false, error: "server_error" });
