@@ -1,13 +1,16 @@
+// src/middleware/auth.ts
 import jwt from "jsonwebtoken";
-import { prisma } from "../lib/prisma";
+import mongoose from "mongoose";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me"; // same as in auth route
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me"; // same as auth route
 
 // 🔥 MUST MATCH EXACTLY with auth/verify
-const ADMIN_WALLETS = [
-  "8569mYKpddFZsAkQYRrNgNiDKoYYd87UbmmpwvjJiyt2",
-  "DVBiPM5bRjZQiX744miAy4QNkMmV9GPUW2SUjriABhRU",
-];
+const ADMIN_WALLETS = (
+  (process.env.ADMIN_WALLETS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 /**
  * Issue JWT token (helper function)
@@ -44,25 +47,24 @@ export async function requireAuth(req: any, res: any, next: any) {
       return res.status(401).json({ error: "Invalid token payload" });
     }
 
-    const wallet = await prisma.wallet.findUnique({
-      where: { address: decoded.wallet },
-    });
+    // Lookup user document by wallet
+    const User = mongoose.model('User');
+    const walletDoc = await User.findOne({ wallet: decoded.wallet }).lean();
 
-    if (!wallet) {
+    if (!walletDoc) {
       return res.status(401).json({ error: "Invalid user: wallet not found" });
     }
 
-    // Determine role
+    // Determine role: prefer role from token, fall back to ADMIN_WALLETS list or DB role
     const roleFromToken = decoded.role;
-    const isAdmin =
-      roleFromToken === "ADMIN" || ADMIN_WALLETS.includes(wallet.address);
+    const dbRole = walletDoc.role || 'USER';
+    const isAdmin = roleFromToken === "ADMIN" || dbRole === "ADMIN" || ADMIN_WALLETS.includes(walletDoc.wallet?.toLowerCase?.() || '');
 
     const role = isAdmin ? "ADMIN" : "USER";
 
-    // Attach to request for use in routes
     req.auth = {
-      wallet: wallet.address,
-      walletId: wallet.id, // added for admin routes (useful!)
+      wallet: walletDoc.wallet,
+      walletId: walletDoc._id,
       role,
     };
 
