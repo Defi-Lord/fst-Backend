@@ -1,8 +1,8 @@
 // src/middleware/auth.ts
 import jwt from "jsonwebtoken";
-import mongoose from "mongoose";
+import mongoose, { Document, Model } from "mongoose";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me"; // same as auth route
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 
 // 🔥 MUST MATCH EXACTLY with auth/verify
 const ADMIN_WALLETS = (
@@ -12,18 +12,25 @@ const ADMIN_WALLETS = (
     .filter(Boolean)
 );
 
+/* ----------------------------------------------
+   USER DOCUMENT TYPE
+   (Prevents TS errors like: "role does not exist")
+----------------------------------------------- */
+interface IUser extends Document {
+  _id: string;
+  wallet: string;
+  role?: string;
+}
+
 /**
- * Issue JWT token (helper function)
+ * Issue JWT token
  */
 export function issueJwt(payload: any) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
 }
 
 /**
- * Require Authentication Middleware
- * - Validates token
- * - Ensures wallet exists
- * - Attaches req.auth = { wallet, walletId, role }
+ * Authentication Middleware
  */
 export async function requireAuth(req: any, res: any, next: any) {
   try {
@@ -37,46 +44,52 @@ export async function requireAuth(req: any, res: any, next: any) {
 
     let decoded: any;
     try {
-      decoded = jwt.verify(token, JWT_SECRET) as any;
-    } catch (err: any) {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (err) {
       return res.status(401).json({ error: "Invalid or expired token" });
     }
 
-    // wallet address MUST be inside token because it's signed
     if (!decoded.wallet) {
       return res.status(401).json({ error: "Invalid token payload" });
     }
 
-    // Lookup user document by wallet
-    const User = mongoose.model('User');
-    const walletDoc = await User.findOne({ wallet: decoded.wallet }).lean();
+    // ---- FIXED: explicit Mongoose model + type ----
+    const User = mongoose.model<IUser>("User");
 
-    if (!walletDoc) {
+    // must return ONE document, not array
+    const userDoc = await User.findOne({ wallet: decoded.wallet }).lean<IUser>();
+
+    if (!userDoc) {
       return res.status(401).json({ error: "Invalid user: wallet not found" });
     }
 
-    // Determine role: prefer role from token, fall back to ADMIN_WALLETS list or DB role
+    // ---- FIXED: safe role detection ----
     const roleFromToken = decoded.role;
-    const dbRole = walletDoc.role || 'USER';
-    const isAdmin = roleFromToken === "ADMIN" || dbRole === "ADMIN" || ADMIN_WALLETS.includes(walletDoc.wallet?.toLowerCase?.() || '');
+    const dbRole = userDoc.role || "USER";
+
+    const isAdmin =
+      roleFromToken === "ADMIN" ||
+      dbRole === "ADMIN" ||
+      ADMIN_WALLETS.includes(userDoc.wallet?.toLowerCase() || "");
 
     const role = isAdmin ? "ADMIN" : "USER";
 
+    // ---- FIXED: enforce correct typing ----
     req.auth = {
-      wallet: walletDoc.wallet,
-      walletId: walletDoc._id,
+      wallet: userDoc.wallet,
+      walletId: userDoc._id,
       role,
     };
 
-    next();
+    return next();
   } catch (err: any) {
-    console.error("❌ Auth verification error:", err?.message || err);
+    console.error("❌ Auth verification error:", err.message || err);
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
 
 /**
- * Require Admin Middleware
+ * Admin-only Middleware
  */
 export function requireAdmin(req: any, res: any, next: any) {
   if (!req.auth) {
