@@ -1,73 +1,52 @@
-import express, { Request, Response } from "express";
+// src/server.ts
+import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import jwt from "jsonwebtoken";
-import helmet from "helmet";
-import rateLimit from "express-rate-limit";
-import cookieParser from "cookie-parser";
-import authRoutes from "./routes/auth.js";
-import adminRoutes from "./routes/admin.js";
-import contestsRoutes from "./routes/contests.js";
-import fplRoutes from "./routes/fpl.js";
+import mongoose from "mongoose";
+
+import authRoutes from "./routes/auth";
+import userRoutes from "./routes/user";
+import rewardRoutes from "./routes/reward";
+import transactionRoutes from "./routes/transaction";
+import adminRoutes from "./routes/admin";
 
 dotenv.config();
 
 const app = express();
 
-// ================= MIDDLEWARE ================
-app.use(
-  cors({
-    origin: process.env.CORS_ORIGIN?.split(",") || "*",
-    credentials: true,
-  })
-);
+// Middleware
+app.use(cors());
 app.use(express.json());
-app.use(cookieParser());
-app.use(helmet());
 
-// Optional: Basic rate limiting
-app.use(
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: 500,
-  })
-);
+// MongoDB Connection
+const MONGO_URI = process.env.MONGO_URI || "";
+if (!MONGO_URI) {
+  console.error("❌ Missing MONGO_URI in environment variables");
+  process.exit(1);
+}
 
-// =============== ROUTES =====================
+mongoose
+  .connect(MONGO_URI)
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch((err) => {
+    console.error("❌ MongoDB connection error:", err);
+    process.exit(1);
+  });
 
-// AUTH (Correct version from /routes/auth.ts)
+// Routes
 app.use("/auth", authRoutes);
-
-// ADMIN ROUTES
+app.use("/user", userRoutes);
+app.use("/rewards", rewardRoutes);
+app.use("/transactions", transactionRoutes);
 app.use("/admin", adminRoutes);
 
-// FPL + USER + CONTEST ROUTES
-app.use("/fpl", fplRoutes);
-app.use("/contests", contestsRoutes);
-
-// =============== HEALTH CHECK ==================
-app.get("/health", (req: Request, res: Response) => {
-  return res.json({ ok: true, status: "server is running" });
+// Default route
+app.get("/", (req, res) => {
+  res.send("FST Backend API is running 🚀");
 });
 
-// =============== JWT DEBUG (OPTIONAL) ==================
-app.post("/debug/decode", (req: Request, res: Response) => {
-  const { token } = req.body;
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!);
-    return res.json({ ok: true, decoded });
-  } catch (err: any) {
-    return res.status(400).json({ ok: false, error: err.message });
-  }
-});
-
-// =============== 404 HANDLER ==================
-app.use("*", (req, res) => {
-  res.status(404).json({ error: "Route not found" });
-});
-
-// =============== SERVER START ==================
-const PORT = process.env.PORT || 3000;
+// Start Server
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`🔥 Server running on port ${PORT}`);
+  console.log(`🚀 Server is running on port ${PORT}`);
 });
