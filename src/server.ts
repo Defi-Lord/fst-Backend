@@ -10,7 +10,7 @@ import rewardRoutes from "./routes/reward";
 import transactionRoutes from "./routes/transaction";
 import adminRoutes from "./routes/admin";
 
-dotenv.config(); // Loads local .env only in development
+dotenv.config(); // Loads .env locally in development only
 
 const app = express();
 
@@ -18,15 +18,19 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ==== ENV DEBUG (SAFE FOR PROD) ====
+// ===== ENV DEBUG (HELPFUL FOR DEPLOY TROUBLESHOOTING) =====
 console.log("🔍 Loaded ENV keys:", Object.keys(process.env));
-console.log("🔍 MONGO_URI value:", process.env.MONGO_URI ? "SET ✔" : "NOT SET ❌");
+console.log(
+  "🔍 Mongo URI status:",
+  process.env.MONGO_URI ? "MONGO_URI ✔" : process.env.MONGODB_URI ? "MONGODB_URI ✔" : "❌ NOT SET"
+);
 
-// MongoDB Connection
-const MONGO_URI = process.env.MONGO_URI;
+// === MongoDB Connection ===
+// Supports both common names: MONGO_URI and MONGODB_URI
+const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI || "";
 
 if (!MONGO_URI || MONGO_URI.trim().length === 0) {
-  console.error("❌ Missing MONGO_URI in environment variables (value is empty)");
+  console.error("❌ Missing MONGO_URI or MONGODB_URI in environment variables");
   process.exit(1);
 }
 
