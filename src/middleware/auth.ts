@@ -1,10 +1,10 @@
 // src/middleware/auth.ts
 import jwt from "jsonwebtoken";
-import mongoose, { Document, Model } from "mongoose";
+import mongoose, { Document } from "mongoose";
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 
-// 🔥 MUST MATCH EXACTLY with auth/verify
+// Parse admin wallet list from ENV
 const ADMIN_WALLETS = (
   (process.env.ADMIN_WALLETS || "")
     .split(",")
@@ -12,32 +12,50 @@ const ADMIN_WALLETS = (
     .filter(Boolean)
 );
 
-/* ----------------------------------------------
-   USER DOCUMENT TYPE
-   (Prevents TS errors like: "role does not exist")
------------------------------------------------ */
+// ------------------------
+// USER DOC TYPE
+// ------------------------
 interface IUser extends Document {
   _id: string;
   wallet: string;
   role?: string;
 }
 
-/**
- * Issue JWT token
- */
+// Safe function to get User model
+function getUserModel(): mongoose.Model<IUser> {
+  try {
+    return mongoose.model<IUser>("User");
+  } catch {
+    const schema = new mongoose.Schema(
+      {
+        wallet: { type: String, unique: true },
+        role: { type: String, default: "USER" },
+        displayName: String,
+      },
+      { timestamps: true }
+    );
+    return mongoose.model<IUser>("User", schema);
+  }
+}
+
+// ------------------------
+// ISSUE JWT TOKEN
+// ------------------------
 export function issueJwt(payload: any) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
 }
 
-/**
- * Authentication Middleware
- */
+// ------------------------
+// AUTH MIDDLEWARE
+// ------------------------
 export async function requireAuth(req: any, res: any, next: any) {
   try {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Missing or invalid Authorization header" });
+      return res
+        .status(401)
+        .json({ error: "Missing or invalid Authorization header" });
     }
 
     const token = authHeader.split(" ")[1];
@@ -45,7 +63,7 @@ export async function requireAuth(req: any, res: any, next: any) {
     let decoded: any;
     try {
       decoded = jwt.verify(token, JWT_SECRET);
-    } catch (err) {
+    } catch {
       return res.status(401).json({ error: "Invalid or expired token" });
     }
 
@@ -53,44 +71,43 @@ export async function requireAuth(req: any, res: any, next: any) {
       return res.status(401).json({ error: "Invalid token payload" });
     }
 
-    // ---- FIXED: explicit Mongoose model + type ----
-    const User = mongoose.model<IUser>("User");
+    const User = getUserModel();
 
-    // must return ONE document, not array
-    const userDoc = await User.findOne({ wallet: decoded.wallet }).lean<IUser>();
+    // Important: must return a single user doc
+    const user = await User.findOne({ wallet: decoded.wallet })
+      .lean<IUser>()
+      .exec();
 
-    if (!userDoc) {
-      return res.status(401).json({ error: "Invalid user: wallet not found" });
+    if (!user) {
+      return res.status(401).json({ error: "User not found for this wallet" });
     }
 
-    // ---- FIXED: safe role detection ----
-    const roleFromToken = decoded.role;
-    const dbRole = userDoc.role || "USER";
+    // Role resolution: DB → token → ENV list
+    const dbRole = user.role || "USER";
+    const tokenRole = decoded.role || "USER";
+    const wallet = user.wallet.toLowerCase();
 
     const isAdmin =
-      roleFromToken === "ADMIN" ||
       dbRole === "ADMIN" ||
-      ADMIN_WALLETS.includes(userDoc.wallet?.toLowerCase() || "");
+      tokenRole === "ADMIN" ||
+      ADMIN_WALLETS.includes(wallet);
 
-    const role = isAdmin ? "ADMIN" : "USER";
-
-    // ---- FIXED: enforce correct typing ----
     req.auth = {
-      wallet: userDoc.wallet,
-      walletId: userDoc._id,
-      role,
+      wallet: user.wallet,
+      walletId: user._id,
+      role: isAdmin ? "ADMIN" : "USER",
     };
 
     return next();
   } catch (err: any) {
-    console.error("❌ Auth verification error:", err.message || err);
+    console.error("❌ requireAuth error:", err);
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 }
 
-/**
- * Admin-only Middleware
- */
+// ------------------------
+// ADMIN-ONLY MIDDLEWARE
+// ------------------------
 export function requireAdmin(req: any, res: any, next: any) {
   if (!req.auth) {
     return res.status(401).json({ error: "Unauthorized" });
