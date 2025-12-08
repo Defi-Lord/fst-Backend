@@ -4,7 +4,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
 
-import authRoutes from "./routes/auth";
+import authRoutes from "./routes/authRoutes";
 import userRoutes from "./routes/user";
 import rewardRoutes from "./routes/reward";
 import transactionRoutes from "./routes/transaction";
