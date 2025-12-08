@@ -8,7 +8,7 @@ import mongoose from "mongoose";
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
-const NONCE_TTL_SEC = 300;
+const NONCE_TTL_SEC = 300; // 5 minutes
 
 /* =========================
    NONCE MODEL
@@ -50,7 +50,6 @@ try {
 function isAdminWallet(addr: string) {
   const raw = process.env.ADMIN_WALLETS || "";
   if (!raw.trim()) return false;
-
   return raw
     .split(",")
     .map((w) => w.trim().toLowerCase())
@@ -63,7 +62,7 @@ function isAdminWallet(addr: string) {
 function isSolanaAddress(addr: string) {
   try {
     const decoded = bs58.decode(addr);
-    return decoded.length === 32; // Valid Solana pubkey
+    return decoded.length === 32;
   } catch {
     return false;
   }
@@ -120,6 +119,7 @@ router.post("/verify", async (req: Request, res: Response) => {
     if (!stored)
       return res.status(400).json({ success: false, error: "nonce_missing" });
 
+    // Reconstruct the message exactly as in /nonce
     const message = `FST login
 
 Wallet: ${walletAddress}
@@ -143,9 +143,8 @@ By signing this message you prove ownership of the wallet.`;
     if (!valid)
       return res.status(401).json({ success: false, error: "invalid_signature" });
 
-    /* FIND OR CREATE USER */
+    // FIND OR CREATE USER
     let user = await User.findOne({ wallet: walletAddress });
-
     const shouldBeAdmin = isAdminWallet(walletAddress);
 
     if (!user) {
@@ -161,6 +160,7 @@ By signing this message you prove ownership of the wallet.`;
     const payload = { wallet: walletAddress, role: user.role };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
 
+    // Delete used nonce(s)
     await Nonce.deleteMany({ address: walletAddress });
 
     res.json({
