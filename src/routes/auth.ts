@@ -10,9 +10,9 @@ const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 const NONCE_TTL_SEC = 300;
 
-// ------------------------
-// NONCE MODEL
-// ------------------------
+/* =========================
+   NONCE MODEL
+========================= */
 const nonceSchema = new mongoose.Schema({
   address: { type: String, unique: true },
   nonce: String,
@@ -26,9 +26,9 @@ try {
   Nonce = mongoose.model("Nonce", nonceSchema);
 }
 
-// ------------------------
-// USER MODEL
-// ------------------------
+/* =========================
+   USER MODEL
+========================= */
 let User: any;
 try {
   User = mongoose.model("User");
@@ -44,28 +44,27 @@ try {
   User = mongoose.model("User", userSchema);
 }
 
-// ------------------------
-// ADMIN WALLET CHECK
-// ------------------------
+/* =========================
+   ADMIN WALLET CHECK
+========================= */
 function isAdminWallet(addr: string) {
   const raw = process.env.ADMIN_WALLETS || "";
   if (!raw.trim()) return false;
+
   return raw
     .split(",")
-    .map((s) => s.trim().toLowerCase())
+    .map((w) => w.trim().toLowerCase())
     .includes(addr.toLowerCase());
 }
 
-// ------------------------
-// POST /auth/nonce
-// ------------------------
+/* =========================
+   POST /auth/nonce
+========================= */
 router.post("/nonce", async (req: Request, res: Response) => {
   try {
     const { walletAddress } = req.body;
     if (!walletAddress)
-      return res
-        .status(400)
-        .json({ success: false, error: "walletAddress required" });
+      return res.status(400).json({ success: false, error: "walletAddress required" });
 
     const nonce = crypto.randomBytes(16).toString("hex");
 
@@ -83,30 +82,25 @@ By signing this message you prove ownership of the wallet.`;
       { upsert: true }
     );
 
-    return res.json({ success: true, nonce, message });
+    res.json({ success: true, nonce, message });
   } catch (err) {
-    console.error("❌ /auth/nonce error:", err);
-    return res.status(500).json({ success: false, error: "server_error" });
+    console.error("❌ /auth/nonce:", err);
+    res.status(500).json({ success: false, error: "server_error" });
   }
 });
 
-// ------------------------
-// POST /auth/verify
-// ------------------------
+/* =========================
+   POST /auth/verify
+========================= */
 router.post("/verify", async (req: Request, res: Response) => {
   try {
     const { walletAddress, signature } = req.body;
-
     if (!walletAddress || !signature)
-      return res
-        .status(400)
-        .json({ success: false, error: "missing_params" });
+      return res.status(400).json({ success: false, error: "missing_params" });
 
     const stored = await Nonce.findOne({ address: walletAddress });
     if (!stored)
-      return res
-        .status(400)
-        .json({ success: false, error: "nonce_missing" });
+      return res.status(400).json({ success: false, error: "nonce_missing" });
 
     const message = `FST login
 
@@ -118,7 +112,6 @@ By signing this message you prove ownership of the wallet.`;
 
     const msgBytes = new TextEncoder().encode(message);
 
-    // Decode signature (base64 OR bs58)
     let sigBytes: Uint8Array;
     try {
       sigBytes = Uint8Array.from(Buffer.from(signature, "base64"));
@@ -127,77 +120,73 @@ By signing this message you prove ownership of the wallet.`;
     }
 
     const pubkeyBytes = bs58.decode(walletAddress);
-
     const valid = nacl.sign.detached.verify(msgBytes, sigBytes, pubkeyBytes);
     if (!valid)
-      return res
-        .status(401)
-        .json({ success: false, error: "invalid_signature" });
+      return res.status(401).json({ success: false, error: "invalid_signature" });
 
-    // Find or create user
+    /* ✅ FIND OR CREATE USER */
     let user = await User.findOne({ wallet: walletAddress });
+
+    const shouldBeAdmin = isAdminWallet(walletAddress);
+
     if (!user) {
       user = await User.create({
         wallet: walletAddress,
-        role: isAdminWallet(walletAddress) ? "ADMIN" : "USER",
+        role: shouldBeAdmin ? "ADMIN" : "USER",
       });
+    } else if (shouldBeAdmin && user.role !== "ADMIN") {
+      // ✅ Auto-upgrade existing user
+      user.role = "ADMIN";
+      await user.save();
     }
 
-    const payload = {
-      wallet: walletAddress,
-      role: user.role || "USER",
-    };
-
+    const payload = { wallet: walletAddress, role: user.role };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
 
     await Nonce.deleteMany({ address: walletAddress });
 
-    return res.json({
+    res.json({
       success: true,
       token,
       wallet: walletAddress,
-      role: payload.role,
+      role: user.role,
     });
   } catch (err) {
-    console.error("❌ /auth/verify error:", err);
-    return res.status(500).json({ success: false, error: "server_error" });
+    console.error("❌ /auth/verify:", err);
+    res.status(500).json({ success: false, error: "server_error" });
   }
 });
 
-// ------------------------
-// POST /auth/introspect
-// ------------------------
+/* =========================
+   POST /auth/introspect
+========================= */
 router.post("/introspect", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization || "";
-    if (!authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({
-        ok: false,
-        error: "Missing or invalid Authorization header",
-      });
-    }
+    const auth = req.headers.authorization || "";
+    if (!auth.startsWith("Bearer "))
+      return res.status(401).json({ ok: false, error: "Missing token" });
 
-    const token = authHeader.split(" ")[1];
+    const token = auth.split(" ")[1];
 
     let decoded: any;
     try {
       decoded = jwt.verify(token, JWT_SECRET);
     } catch {
-      return res.status(401).json({ ok: false, error: "Invalid or expired token" });
+      return res.status(401).json({ ok: false, error: "Invalid token" });
     }
 
     const user = await User.findOne({ wallet: decoded.wallet });
     if (!user)
-      return res.status(401).json({ ok: false, error: "Wallet not found" });
+      return res.status(401).json({ ok: false, error: "User not found" });
 
-    return res.json({
+    res.json({
       ok: true,
-      role: decoded.role || user.role || "USER",
-      wallet: decoded.wallet,
+      wallet: user.wallet,
+      role: user.role,
     });
   } catch (err) {
-    console.error("❌ /auth/introspect error:", err);
-    return res.status(500).json({ ok: false, error: "server_error" });
+    console.error("❌ /auth/introspect:", err);
+    res.status(500).json({ ok: false, error: "server_error" });
   }
 });
 
