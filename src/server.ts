@@ -4,7 +4,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import mongoose from "mongoose";
 
-import authRoutes from "./routes/authRoutes";
+import authRoutes from "./routes/auth"; // <-- updated import
 import userRoutes from "./routes/user";
 import rewardRoutes from "./routes/reward";
 import transactionRoutes from "./routes/transaction";
@@ -25,8 +25,7 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // allow server-to-server / curl / same-origin
-      if (!origin) return callback(null, true);
+      if (!origin) return callback(null, true); // server-to-server / curl / same-origin
 
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
@@ -81,7 +80,7 @@ mongoose
 /* ======================================================
    ROUTES
 ====================================================== */
-app.use("/auth", authRoutes);
+app.use("/auth", authRoutes); // <-- now uses the new auth.ts
 app.use("/user", userRoutes);
 app.use("/rewards", rewardRoutes);
 app.use("/transactions", transactionRoutes);
