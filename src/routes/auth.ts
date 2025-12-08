@@ -5,8 +5,10 @@ import jwt from "jsonwebtoken";
 import nacl from "tweetnacl";
 import bs58 from "bs58";
 import mongoose from "mongoose";
+import { ethers } from "ethers";
 
 const router = express.Router();
+
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 const NONCE_TTL_SEC = 300;
 
@@ -63,6 +65,7 @@ function isAdminWallet(addr: string) {
 router.post("/nonce", async (req: Request, res: Response) => {
   try {
     const { walletAddress } = req.body;
+
     if (!walletAddress)
       return res.status(400).json({ success: false, error: "walletAddress required" });
 
@@ -77,7 +80,7 @@ Issued At: ${new Date().toISOString()}
 By signing this message you prove ownership of the wallet.`;
 
     await Nonce.findOneAndUpdate(
-      { address: walletAddress },
+      { address: walletAddress.toLowerCase() },
       { nonce, createdAt: new Date() },
       { upsert: true }
     );
@@ -90,7 +93,103 @@ By signing this message you prove ownership of the wallet.`;
 });
 
 /* =========================
+   POST /auth/challenge  (NEW)
+   - Frontend expects this!
+========================= */
+router.post("/challenge", async (req: Request, res: Response) => {
+  try {
+    const { address, signature } = req.body;
+
+    if (!address || !signature)
+      return res.status(400).json({ error: "Missing address or signature" });
+
+    const stored = await Nonce.findOne({ address: address.toLowerCase() });
+    if (!stored)
+      return res.status(400).json({ error: "Nonce not found" });
+
+    const msg = `FST login
+
+Wallet: ${address}
+Nonce: ${stored.nonce}
+Issued At: ${stored.createdAt.toISOString()}
+
+By signing this message you prove ownership of the wallet.`;
+
+    let verified = false;
+
+    /* =========================
+       VERIFY EVM SIGNATURE
+    ========================== */
+    try {
+      const recovered = ethers.verifyMessage(msg, signature);
+      if (recovered.toLowerCase() === address.toLowerCase()) {
+        verified = true;
+      }
+    } catch {}
+
+    /* =========================
+       VERIFY SOLANA SIGNATURE
+    ========================== */
+    if (!verified) {
+      try {
+        const pubkeyBytes = bs58.decode(address);
+        const msgBytes = new TextEncoder().encode(msg);
+
+        let sigBytes: Uint8Array;
+        try {
+          sigBytes = Uint8Array.from(Buffer.from(signature, "base64"));
+        } catch {
+          sigBytes = bs58.decode(signature);
+        }
+
+        verified = nacl.sign.detached.verify(msgBytes, sigBytes, pubkeyBytes);
+      } catch {}
+    }
+
+    if (!verified)
+      return res.status(401).json({ success: false, error: "invalid_signature" });
+
+    /* =========================
+       FIND OR CREATE USER
+    ========================== */
+    let user = await User.findOne({ wallet: address });
+
+    const shouldBeAdmin = isAdminWallet(address);
+
+    if (!user) {
+      user = await User.create({
+        wallet: address,
+        role: shouldBeAdmin ? "ADMIN" : "USER",
+      });
+    } else if (shouldBeAdmin && user.role !== "ADMIN") {
+      user.role = "ADMIN";
+      await user.save();
+    }
+
+    const token = jwt.sign(
+      { wallet: address, role: user.role },
+      JWT_SECRET,
+      { expiresIn: "30d" }
+    );
+
+    await Nonce.deleteMany({ address: address.toLowerCase() });
+
+    return res.json({
+      success: true,
+      created: true,
+      token,
+      wallet: address,
+      role: user.role,
+    });
+  } catch (err) {
+    console.error("❌ /auth/challenge:", err);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+/* =========================
    POST /auth/verify
+   (Legacy support)
 ========================= */
 router.post("/verify", async (req: Request, res: Response) => {
   try {
@@ -124,33 +223,18 @@ By signing this message you prove ownership of the wallet.`;
     if (!valid)
       return res.status(401).json({ success: false, error: "invalid_signature" });
 
-    /* ✅ FIND OR CREATE USER */
+    /* FIND/CREATE USER */
     let user = await User.findOne({ wallet: walletAddress });
-
-    const shouldBeAdmin = isAdminWallet(walletAddress);
-
     if (!user) {
-      user = await User.create({
-        wallet: walletAddress,
-        role: shouldBeAdmin ? "ADMIN" : "USER",
-      });
-    } else if (shouldBeAdmin && user.role !== "ADMIN") {
-      // ✅ Auto-upgrade existing user
-      user.role = "ADMIN";
-      await user.save();
+      user = await User.create({ wallet: walletAddress });
     }
 
-    const payload = { wallet: walletAddress, role: user.role };
+    const payload = { wallet: walletAddress };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
 
     await Nonce.deleteMany({ address: walletAddress });
 
-    res.json({
-      success: true,
-      token,
-      wallet: walletAddress,
-      role: user.role,
-    });
+    res.json({ success: true, token, wallet: walletAddress });
   } catch (err) {
     console.error("❌ /auth/verify:", err);
     res.status(500).json({ success: false, error: "server_error" });
